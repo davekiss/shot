@@ -87,6 +87,12 @@ The agent gets back what was covered and where, as masked previews like `ghp_…
 
 Ask *"where's the export button?"* and the agent doesn't describe it: it points. `point` draws an arrow, a spotlight or numbered steps right over the live window for a few seconds, then fades them out. Clicks pass through, focus never moves, and nothing is saved.
 
+<p align="center">
+  <img src="assets/point-demo.gif" alt="A spotlight, arrow and Start here label fade in over the Read our docs button on mux.com, then fade away" width="720">
+  <br>
+  <sub>Recorded with shot's own <code>record</code>, while <code>point</code> marked up mux.com live.</sub>
+</p>
+
 ```json
 {"app": "Figma", "seconds": 5, "annotations": [
   {"type": "spotlight", "target": "Export"},

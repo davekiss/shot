@@ -85,6 +85,10 @@ final class Recorder: NSObject, SCStreamOutput {
     private let ci = CIContext()
     private var gif: CGImageDestination?
     private var gifEvery = 0.0, nextGif = 0.0
+    // ScreenCaptureKit only sends frames when something changes, so a GIF
+    // frame is held until the next one arrives and then given its real duration.
+    private var pendingGif: (t: Double, image: CGImage)?
+    private var lastSample: CMSampleBuffer?
     var storyboard = Storyboard()
     var latest: (t: Double, image: CGImage)?
     var frames = 0
@@ -122,7 +126,7 @@ final class Recorder: NSObject, SCStreamOutput {
             firstPTS = pts
             started = true
         }
-        if let input, input.isReadyForMoreMediaData { input.append(sb) }
+        if let input, input.isReadyForMoreMediaData { input.append(sb); lastSample = sb }
         frames += 1
         let t = (pts - (firstPTS ?? pts)).seconds
         if t >= nextSample || frames == 1, let img = ci.createCGImage(CIImage(cvPixelBuffer: pixels), from: CIImage(cvPixelBuffer: pixels).extent) {
@@ -135,20 +139,47 @@ final class Recorder: NSObject, SCStreamOutput {
             let src = CIImage(cvPixelBuffer: pixels)
             let scale = min(1, 960 / src.extent.width)
             if let small = ci.createCGImage(src.transformed(by: CGAffineTransform(scaleX: scale, y: scale)), from: src.extent.applying(CGAffineTransform(scaleX: scale, y: scale))) {
-                CGImageDestinationAddImage(gif, small, [kCGImagePropertyGIFDictionary: [kCGImagePropertyGIFDelayTime: gifEvery]] as CFDictionary)
+                if let p = pendingGif { addGifFrame(p.image, lasting: t - p.t, to: gif) }
+                pendingGif = (t, small)
             }
         }
     }
 
-    func finish() {
+    /// `elapsed` is how long recording ran. The screen may have sat still at
+    /// the end, sending no frames, so the video and GIF are held to that time.
+    func finish(elapsed: Double) {
         let done = DispatchSemaphore(value: 0)
-        input?.markAsFinished()
-        if let writer, started { writer.finishWriting { done.signal() }; done.wait() }
-        if let gif { CGImageDestinationFinalize(gif) }
+        if !started { input?.markAsFinished() }
+        if let writer, started, let firstPTS {
+            let end = firstPTS + CMTime(seconds: elapsed, preferredTimescale: 600)
+            // Repeat the last frame at the end time so a still ending keeps its length.
+            if let last = lastSample, end > last.presentationTimeStamp, let input, input.isReadyForMoreMediaData {
+                var timing = CMSampleTimingInfo(duration: .invalid, presentationTimeStamp: end, decodeTimeStamp: .invalid)
+                var copy: CMSampleBuffer?
+                if CMSampleBufferCreateCopyWithNewTiming(allocator: nil, sampleBuffer: last, sampleTimingEntryCount: 1,
+                                                         sampleTimingArray: &timing, sampleBufferOut: &copy) == noErr, let copy {
+                    input.append(copy)
+                }
+            }
+            input?.markAsFinished()
+            writer.endSession(atSourceTime: end)
+            writer.finishWriting { done.signal() }
+            done.wait()
+        }
+        if let gif {
+            if let p = pendingGif { addGifFrame(p.image, lasting: max(gifEvery, elapsed - p.t), to: gif) }
+            CGImageDestinationFinalize(gif)
+        }
         storyboard.finish()
     }
 
     func onQueue() -> DispatchQueue { queue }
+
+
+    private func addGifFrame(_ img: CGImage, lasting seconds: Double, to gif: CGImageDestination) {
+        CGImageDestinationAddImage(gif, img, [kCGImagePropertyGIFDictionary: [
+            kCGImagePropertyGIFDelayTime: max(0.02, seconds), kCGImagePropertyGIFUnclampedDelayTime: max(0.02, seconds)]] as CFDictionary)
+    }
 }
 
 enum Record {
@@ -197,6 +228,7 @@ enum Record {
         let stream = SCStream(filter: filter, configuration: config, delegate: nil)
         try stream.addStreamOutput(recorder, type: .screen, sampleHandlerQueue: recorder.onQueue())
         try wait { (done: @escaping (Error?) -> Void) in stream.startCapture(completionHandler: done) }
+        let began = Date()
 
         // Record for `seconds`, or until the condition holds (checked twice a second).
         let start = Date()
@@ -215,7 +247,8 @@ enum Record {
             if met { Thread.sleep(forTimeInterval: 0.6); break }   // a beat after, so the moment is on film
         }
         try wait { (done: @escaping (Error?) -> Void) in stream.stopCapture(completionHandler: done) }
-        recorder.onQueue().sync { recorder.finish() }
+        let elapsed = Date().timeIntervalSince(began)
+        recorder.onQueue().sync { recorder.finish(elapsed: elapsed) }
         guard recorder.frames > 0 else {
             throw ShotError("No frames were recorded. Minimized windows don't draw; check Screen Recording permission for the app running your agent.")
         }
@@ -245,7 +278,7 @@ enum Record {
         info["video"] = videoURL.path
         if let gifURL { info["gif"] = gifURL.path }
         info["storyboard"] = sheetPath
-        info["duration"] = NSDecimalNumber(string: String(format: "%.1f", recorder.storyboard.last?.t ?? 0))
+        info["duration"] = NSDecimalNumber(string: String(format: "%.1f", elapsed))
         info["moments"] = list
         if recorder.storyboard.moments.count > moments.count {
             info["note"] = "\(recorder.storyboard.moments.count) moments changed; the storyboard shows \(moments.count) of them, evenly spread."
