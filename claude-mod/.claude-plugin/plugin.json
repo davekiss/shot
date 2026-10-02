@@ -1,0 +1,24 @@
+{
+  "name": "shot",
+  "version": "0.1.0",
+  "author": { "name": "Dave Kiss", "url": "https://github.com/davekiss" },
+  "homepage": "https://github.com/davekiss/shot",
+  "license": "MIT",
+  "description": "Headless screenshots for Claude: the shot MCP server, a skill for using it well, /shot capture and a screenshot history pane",
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "auto_open": {
+      "type": "string",
+      "title": "Auto-open screenshots",
+      "description": "Open shot's output in Preview: off (agent-only), composed (edited images), or all (every capture too)",
+      "options": ["off", "composed", "all"],
+      "default": "off"
+    },
+    "binary": {
+      "type": "string",
+      "title": "shot binary",
+      "description": "Path to a shot executable. Leave empty to use the plugin's own (a local build, shot on PATH, or the matching release).",
+      "default": ""
+    }
+  }
+}
