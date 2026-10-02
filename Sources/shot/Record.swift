@@ -184,6 +184,7 @@ final class Recorder: NSObject, SCStreamOutput {
 
 enum Record {
     static func run(_ a: Args) throws -> ToolResult {
+        try requireScreenRecording()
         let seconds = min(max(num(a, "seconds") ?? 10, 1), 60)
         let until = try Wait.condition(a["until"])
         let fps = Int(min(max(num(a, "fps") ?? 30, 5), 60))

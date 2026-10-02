@@ -22,7 +22,36 @@ jobs:
         run: |
           swift build -c release --arch arm64 --arch x86_64
           mkdir -p dist/skills && cp .build/apple/Products/Release/shot dist/ && cp -R claude-mod/skills/screenshots dist/skills/
-          tar -czf shot-macos-universal.tar.gz -C dist shot skills
+      # Signs with the Developer ID certificate and notarizes with Apple, so a
+      # browser download opens without a Gatekeeper warning. Needs secrets:
+      # MACOS_CERT_P12 (base64 .p12), MACOS_CERT_PASSWORD, and an App Store
+      # Connect API key: NOTARY_KEY_P8 (base64 .p8), NOTARY_KEY_ID, NOTARY_ISSUER_ID.
+      - name: Sign and notarize
+        env:
+          MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+          NOTARY_KEY_P8: ${{ secrets.NOTARY_KEY_P8 }}
+          NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
+          NOTARY_ISSUER_ID: ${{ secrets.NOTARY_ISSUER_ID }}
+        if: env.MACOS_CERT_P12 != ''
+        run: |
+          KEYCHAIN="$RUNNER_TEMP/signing.keychain-db"
+          KEYCHAIN_PW="$(uuidgen)"
+          security create-keychain -p "$KEYCHAIN_PW" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PW" "$KEYCHAIN"
+          echo "$MACOS_CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" -P "$MACOS_CERT_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PW" "$KEYCHAIN" >/dev/null
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
+          codesign --force --options runtime --timestamp --sign "Developer ID Application" dist/shot
+          codesign --verify --strict --verbose=2 dist/shot
+          echo "$NOTARY_KEY_P8" | base64 --decode > "$RUNNER_TEMP/notary.p8"
+          ditto -c -k --keepParent dist/shot "$RUNNER_TEMP/shot.zip"
+          xcrun notarytool submit "$RUNNER_TEMP/shot.zip" --key "$RUNNER_TEMP/notary.p8" \
+            --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER_ID" --wait --timeout 20m
+      - name: Package
+        run: tar -czf shot-macos-universal.tar.gz -C dist shot skills
       - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}

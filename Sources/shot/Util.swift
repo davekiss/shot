@@ -178,3 +178,18 @@ func run(_ exe: String, _ args: [String]) throws -> (status: Int32, output: Stri
     p.waitUntilExit()
     return (p.terminationStatus, out)
 }
+
+/// Screen Recording permission belongs to the app that launched shot (the
+/// terminal or the agent's desktop app). Without it macOS still "captures",
+/// returning the wallpaper with no windows, which looks like a broken tool.
+/// So check first; the first check also makes macOS show its prompt.
+func requireScreenRecording() throws {
+    if CGPreflightScreenCaptureAccess() { return }
+    _ = CGRequestScreenCaptureAccess()
+    let host = ProcessInfo.processInfo.environment["TERM_PROGRAM"].map { "your terminal (\($0))" } ?? "the app running your agent (your terminal, or a desktop app like Claude or Cursor)"
+    throw ShotError("""
+        Screen Recording permission is needed for \(host). Turn it on in System Settings → Privacy & Security → Screen Recording, \
+        then quit and reopen that app. Until then macOS returns captures without any window contents. \
+        (compose, ocr, diff and find_sensitive work without it.)
+        """)
+}

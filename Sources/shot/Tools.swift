@@ -58,6 +58,7 @@ enum Tools {
     // MARK: capture
 
     static func capture(_ a: Args) throws -> ToolResult {
+        try requireScreenRecording()
         let mode = a["mode"] as? String ?? "screen"
         let out = (a["output"] as? String).map(expand) ?? timestampedPath("Shot")
         try FileManager.default.createDirectory(atPath: (out as NSString).deletingLastPathComponent, withIntermediateDirectories: true)

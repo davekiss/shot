@@ -10,7 +10,7 @@
 <p align="center"><b>Your agent takes the screenshot. You keep working.</b></p>
 
 <p align="center">
-  Capture, mark up, redact and find screenshots on macOS, from any MCP agent.<br>
+  A macOS tool that lets any MCP agent capture, mark up, redact, record and point at your screen.<br>
   No app window. No stolen focus. No API keys in your bug reports.
 </p>
 
@@ -21,6 +21,12 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-000" alt="MIT"></a>
 </p>
 
+<p align="center">
+  <img src="assets/point-demo.gif" alt="A spotlight, arrow and Start here label fade in over the Read our docs button on mux.com, then fade away" width="760">
+  <br>
+  <sub>Asked where the docs are, the agent points at them on the live screen. Filmed with shot's own <code>record</code>.</sub>
+</p>
+
 ---
 
 You're deep in a bug with your agent, and it needs to see the window. So you stop typing, hit ⌘⇧4, drag a box, find the file, drag it into the chat. Later you want to share it, so you open an editor, draw an arrow, and squint at the corner to make sure your Stripe key isn't in it.
@@ -28,12 +34,6 @@ You're deep in a bug with your agent, and it needs to see the window. So you sto
 With shot, you say *"screenshot the checkout page and circle the error."* The agent finds the window, even if it's buried under six others or minimized to the Dock. It captures it without moving your cursor, points the arrow at the words "Payment failed", blacks out the API key it spotted in the console, and saves it where you'll find it next week.
 
 You never left your keyboard.
-
-<p align="center">
-  <img src="assets/hero.png" alt="A terminal showing a .env file. Every key, password, email and phone number is covered by a black box, while the variable names stay readable." width="820">
-  <br>
-  <sub>Made by shot with no flags at all: <code>compose</code> covers secrets by default. The variable names stay readable, and so does the database host.</sub>
-</p>
 
 ## Get started
 
@@ -83,15 +83,15 @@ Every `compose` call reads the image and covers API keys (Anthropic, OpenAI, Git
 
 The agent gets back what was covered and where, as masked previews like `ghp_…(36 chars)`. The secret itself never enters its context.
 
+<p align="center">
+  <img src="assets/hero.png" alt="A terminal showing a .env file. Every key, password, email and phone number is covered by a black box, while the variable names stay readable." width="820">
+  <br>
+  <sub>Made by shot with no flags at all: <code>compose</code> covers secrets by default. The variable names stay readable, and so does the database host.</sub>
+</p>
+
 ### It shows you, on your own screen
 
-Ask *"where's the export button?"* and the agent doesn't describe it: it points. `point` draws an arrow, a spotlight or numbered steps right over the live window for a few seconds, then fades them out. Clicks pass through, focus never moves, and nothing is saved.
-
-<p align="center">
-  <img src="assets/point-demo.gif" alt="A spotlight, arrow and Start here label fade in over the Read our docs button on mux.com, then fade away" width="720">
-  <br>
-  <sub>Recorded with shot's own <code>record</code>, while <code>point</code> marked up mux.com live.</sub>
-</p>
+Ask *"where's the export button?"* and the agent doesn't describe it: it points. `point` draws an arrow, a spotlight or numbered steps right over the live window for a few seconds, then fades them out. Clicks pass through, focus never moves, and nothing is saved. The demo at the top of this page is exactly this, filmed with `record`.
 
 ```json
 {"app": "Figma", "seconds": 5, "annotations": [
@@ -267,7 +267,7 @@ Prefer the bare server? `claude mcp add --scope user shot -- shot`. Use one or t
 brew install davekiss/tap/shot
 ```
 
-Or download `shot-macos-universal.tar.gz` from [Releases](https://github.com/davekiss/shot/releases), or build it with `swift build -c release`. One universal binary runs on Apple Silicon and Intel.
+Or download `shot-macos-universal.tar.gz` from [Releases](https://github.com/davekiss/shot/releases), or build it with `swift build -c release`. One universal binary runs on Apple Silicon and Intel, signed and notarized by Apple from v0.1.7 on. If macOS says an older download "can't be opened", clear the download flag with `xattr -d com.apple.quarantine shot`.
 
 ### Register it with your agent
 
