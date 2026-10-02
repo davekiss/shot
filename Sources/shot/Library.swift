@@ -7,7 +7,10 @@ import Vision
 /// without opening images. One JSON file beside the screenshots, shared by every
 /// shot process (each Claude session runs its own server), so writes are locked.
 enum Library {
-    static var root: String { "\(NSHomeDirectory())/Screenshots" }
+    /// SHOT_LIBRARY moves the library (and its index) somewhere other than ~/Screenshots.
+    static var root: String {
+        ProcessInfo.processInfo.environment["SHOT_LIBRARY"].map(expand) ?? "\(NSHomeDirectory())/Screenshots"
+    }
     static var indexPath: String { "\(root)/.shot-index.json" }
     static let maxText = 4000
 

@@ -32,7 +32,7 @@ You never left your keyboard.
 <p align="center">
   <img src="assets/hero.png" alt="A terminal showing a .env file. Every key, password, email and phone number is covered by a black box, while the variable names stay readable." width="820">
   <br>
-  <sub>Made by shot with one flag: <code>redact_sensitive: true</code>. The variable names stay readable, and so does the database host.</sub>
+  <sub>Made by shot with no flags at all: <code>compose</code> covers secrets by default. The variable names stay readable, and so does the database host.</sub>
 </p>
 
 ## Get started
@@ -79,7 +79,7 @@ When the UI changes, re-run the same call and the marks follow the text. If a ta
 
 ### It covers secrets before you share
 
-`redact_sensitive: true` reads the image and covers API keys (Anthropic, OpenAI, GitHub, AWS, Stripe, Slack, Google), JWTs, bearer tokens, private keys, passwords in `KEY=value` pairs and connection URLs, random-looking tokens, emails, card numbers and phone numbers. Solid boxes only, because blur can be reversed. Faces are opt-in with `redact_faces`, since product screenshots are full of avatars you want to keep.
+Every `compose` call reads the image and covers API keys (Anthropic, OpenAI, GitHub, AWS, Stripe, Slack, Google), JWTs, bearer tokens, private keys, passwords in `KEY=value` pairs and connection URLs, random-looking tokens, emails, card numbers and phone numbers. Solid boxes only, because blur can be reversed. It's on by default, so a forgotten flag can't leak a key; pass `redact_sensitive: false` when you want that text visible. Faces are opt-in with `redact_faces`, since product screenshots are full of avatars you want to keep.
 
 The agent gets back what was covered and where, as masked previews like `ghp_…(36 chars)`. The secret itself never enters its context.
 
@@ -92,6 +92,85 @@ Every screenshot in `~/Screenshots` is indexed with the app and window it came f
 ### It makes them look good
 
 Backgrounds (gradients, your wallpaper, a blurred copy), padding, shadow, rounded corners, aspect ratios, and trimming of uneven margins. A CleanShot-style editor your agent drives with one call.
+
+## Examples
+
+Every image below is the same capture of [mux.com](https://www.mux.com), marked up by one `compose` call each (shown without the `"input"` path). None of them use a single coordinate.
+
+<table>
+<tr>
+<td width="50%" valign="top">
+
+**Numbered walkthrough**
+
+<img src="assets/examples/walkthrough.png" alt="mux.com with numbered steps 1, 2 and 3 beside Product, Pricing and Get Started">
+
+Steps sit beside their words, and move above when a neighbor is in the way.
+
+```json
+{"annotations": [
+  {"type": "counter", "target": "Product"},
+  {"type": "counter", "target": "Pricing"},
+  {"type": "counter", "target": "GET STARTED"}],
+ "background": {"preset": "violet"}}
+```
+
+</td>
+<td width="50%" valign="top">
+
+**Callout**
+
+<img src="assets/examples/arrow-label.png" alt="mux.com with a box around Read Our Docs and an arrow pointing to it from a Start here label">
+
+An arrow and a label on the same target become a callout: the label rides the arrow's tail.
+
+```json
+{"annotations": [
+  {"type": "rect", "target": "READ OUR DOCS", "pad": 30},
+  {"type": "arrow", "target": "READ OUR DOCS", "pad": 30},
+  {"type": "text", "target": "READ OUR DOCS",
+   "text": "Start here", "background": true}],
+ "background": {"preset": "sunset"}}
+```
+
+</td>
+</tr>
+<tr>
+<td width="50%" valign="top">
+
+**Spotlight and highlight**
+
+<img src="assets/examples/spotlight.png" alt="mux.com dimmed except the Video for Developers headline, with cost-effectively highlighted">
+
+Dim everything but what matters, then mark a phrase inside it.
+
+```json
+{"annotations": [
+  {"type": "spotlight", "target": "VIDEO FOR DEVELOPERS", "pad": 60},
+  {"type": "highlight", "target": "cost-effectively"}],
+ "background": {"preset": "ocean"}}
+```
+
+</td>
+<td width="50%" valign="top">
+
+**Crop to the point**
+
+<img src="assets/examples/crop-underline.png" alt="A crop of the mux.com tagline with search it circled and minutes, not months underlined">
+
+Crop around the lines you care about, then circle and underline inside them.
+
+```json
+{"crop": {"target": ["Mux helps teams", "transform it"], "pad": 48},
+ "annotations": [
+  {"type": "ellipse", "target": "search it", "color": "orange"},
+  {"type": "line", "target": "minutes, not months", "color": "orange"}],
+ "background": {"preset": "slate"}}
+```
+
+</td>
+</tr>
+</table>
 
 ## Tools
 
@@ -106,6 +185,22 @@ Backgrounds (gradients, your wallpaper, a blurred copy), padding, shadow, rounde
 | `annotate` | Save a description of a screenshot so it can be found later |
 
 Annotation types: `arrow`, `line`, `rect`, `ellipse`, `text`, `counter`, `highlight`, `spotlight`, `redact`, `pixelate`, `blur`. Coordinates are always pixels of the original image, top-left origin.
+
+Marks draw in ink that adapts to what's underneath (near-black on light screens, near-white on dark ones) and scale with the text they point at. Pass `color` to pick your own.
+
+### Type styles
+
+Labels and counters come in five styles, like text styles in a photo app. Set one for a whole call with `"font"`, per mark, or as your default with `SHOT_FONT`:
+
+| Style | Face | Feels |
+| --- | --- | --- |
+| `pixel` (default) | [Departure Mono](https://departuremono.com) | shot's own voice, straight from the logo |
+| `clean` | SF Pro | neutral, most legible |
+| `rounded` | SF Pro Rounded | friendly |
+| `serif` | New York | editorial |
+| `mono` | SF Mono | code and data |
+
+Any installed font name works too: `"font": "Avenir Next"`.
 
 ## Install in detail
 
@@ -191,7 +286,7 @@ Every tool runs from the shell too, which is handy for scripts:
 
 ```sh
 shot capture '{"mode":"window","app":"Safari"}'
-shot compose '{"input":"in.png","redact_sensitive":true,"background":{"preset":"sunset"}}'
+shot compose '{"input":"in.png","background":{"preset":"sunset"}}'
 shot find_shots '{"query":"stripe error","since":"3d"}'
 shot find_sensitive '{"input":"in.png"}'
 ```
@@ -208,4 +303,4 @@ Inside a checkout, the plugin uses your local `.build/release/shot` instead of d
 
 ## License
 
-MIT
+MIT. Departure Mono by Helena Zhang is embedded under the [SIL Open Font License](fonts/DepartureMono-OFL.txt).

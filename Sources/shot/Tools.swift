@@ -27,7 +27,7 @@ enum Tools {
         shot captures and edits screenshots headlessly (no app UI, never takes focus). \
         Coordinates are always pixels of the input image with a top-left origin; returned previews are downscaled, \
         so divide preview coordinates by preview_scale. Typical flow: capture → compose, pointing annotations at text with target \
-        instead of coordinates, and redact_sensitive before sharing. \
+        instead of coordinates. compose covers sensitive text by default. \
         Every screenshot in ~/Screenshots (and every file shot writes) is indexed with its app, window and text: \
         use find_shots to locate an earlier screenshot instead of opening images one by one.
         """
@@ -95,27 +95,37 @@ enum Tools {
         guard let input = a["input"] as? String else { throw ShotError("compose needs input (an image path)") }
         var img = try loadImage(input)
         let original = img
+        // Backgrounds scale with the image; marks scale with its text (below).
         let unit = CGFloat(max(2, Double(min(img.width, img.height)) / 160))
+        var markUnit = CGFloat(max(2, sqrt(Double(img.width * img.height)) / 200))
         var origin = CGPoint.zero
         var info: Args = ["input_size": [img.width, img.height]]
         var anns = a["annotations"] as? [Args] ?? []
+        // A font for the whole call applies to every mark that doesn't name its own.
+        if let f = a["font"] as? String { anns = anns.map { var m = $0; if m["font"] == nil { m["font"] = f }; return m } }
 
         // Targets and sensitive data are found on the original input, so their
         // boxes are in the same pixels as every other annotation coordinate.
         if Targets.needed(a) {
             let ocr = OCRText(img)
+            // Text sets the scale: an arrow should be as bold as the words it points at.
+            if let th = ocr.textHeight { markUnit = max(2, th / 3.4) }
+            let unit = markUnit
             var found: [Args] = []
-            anns = try Targets.resolve(anns, ocr: ocr, unit: unit, found: &found)
+            // The crop is worked out first so marks are placed inside what will be kept.
+            var visible = box(a["crop"])
+            if let spec = a["crop"] as? Args, spec["target"] != nil { visible = try Targets.crop(spec, ocr: ocr, unit: unit) }
+            anns = try Targets.resolve(anns, ocr: ocr, unit: unit, visible: visible, found: &found)
             if !found.isEmpty { info["targets"] = found }
-            if let spec = a["crop"] as? Args, spec["target"] != nil {
-                let r = try Targets.crop(spec, ocr: ocr, unit: unit)
+            if let spec = a["crop"] as? Args, spec["target"] != nil, let r = visible {
                 info["crop"] = [Int(r.minX), Int(r.minY), Int(r.width), Int(r.height)]
                 guard let cropped = img.cropping(to: r.integral) else { throw ShotError("crop is outside the image") }
                 img = cropped
                 origin = r.integral.origin
             }
         }
-        let kinds = Sensitive.kinds(text: flag(a, "redact_sensitive"), faces: flag(a, "redact_faces"))
+        // On unless turned off: a forgotten flag shouldn't be how a key gets shared.
+        let kinds = Sensitive.kinds(text: flag(a, "redact_sensitive", true), faces: flag(a, "redact_faces"))
         if !kinds.isEmpty {
             let style = a["redact_style"] as? String ?? "box"
             guard ["box", "pixelate", "blur"].contains(style) else { throw ShotError("redact_style must be box, pixelate or blur") }
@@ -127,6 +137,9 @@ enum Tools {
                 return ["type": type, "x": r.minX, "y": r.minY, "width": r.width, "height": r.height]
             } + anns
             info["redacted"] = findings.map(Sensitive.info)
+            if !findings.isEmpty, a["redact_sensitive"] == nil {
+                info["redacted_note"] = "Sensitive text is covered by default. Pass redact_sensitive: false to keep it visible."
+            }
         }
 
         if a["crop"].flatMap({ ($0 as? Args)?["target"] }) == nil, let c = box(a["crop"]) {
@@ -144,7 +157,7 @@ enum Tools {
             }
         }
         if !anns.isEmpty {
-            img = try Annotator.apply(anns, to: img, offset: origin, unit: unit)
+            img = try Annotator.apply(anns, to: img, offset: origin, unit: markUnit)
         }
         if let bg = a["background"] as? Args {
             img = try Background.apply(bg, to: img, unit: unit)
@@ -221,10 +234,11 @@ enum Tools {
                     "copy": ["type": "boolean", "description": "Also copy the result to the clipboard."],
                     "description": ["type": "string", "description": "One sentence on what the result shows, saved with it for find_shots. Defaults to the input's description."],
                     "preview": ["type": "boolean", "description": "Return a preview image. Default true."],
-                    "crop": ["type": "object", "description": "x, y, width, height in input pixels, or {target: 'text', pad?} to crop around text found in the image.",
+                    "crop": ["type": "object", "description": "x, y, width, height in input pixels, or {target: 'text' or ['text', 'more text'], pad?} to crop around the lines that text is on.",
                              "properties": ["x": ["type": "number"], "y": ["type": "number"], "width": ["type": "number"], "height": ["type": "number"],
-                                            "target": ["type": "string"], "nth": ["type": "number"], "pad": ["type": "number"]]],
-                    "redact_sensitive": ["type": "boolean", "description": "Find and cover sensitive text before anything else is drawn: API keys, tokens, passwords, JWTs, private keys, emails, card numbers and phone numbers. The result lists what was covered with masked previews, never the values."],
+                                            "target": ["description": "Text, or a list of texts, to crop around."], "nth": ["type": "number"], "pad": ["type": "number"]]],
+                    "font": ["type": "string", "description": "Type style for every label and counter: pixel (default, shot's own), clean, rounded, serif, mono, or an installed font name. Any annotation can set its own font too. SHOT_FONT sets the default."],
+                    "redact_sensitive": ["type": "boolean", "description": "On by default: finds and covers sensitive text before anything else is drawn (API keys, tokens, passwords, JWTs, private keys, emails, card numbers, phone numbers). The result lists what was covered with masked previews, never the values. Pass false only when the user wants that text visible."],
                     "redact_faces": ["type": "boolean", "description": "Also pixelate faces (off by default: avatars are often what a screenshot is showing)."],
                     "redact_style": ["type": "string", "enum": ["box", "pixelate", "blur"], "description": "How sensitive text is covered. Default box (solid; the only one that can't be read back). Faces are always pixelated."],
                     "auto_balance": ["type": "boolean", "description": "Trim uniform-colored margins so all four sides match the smallest one."],
@@ -240,7 +254,7 @@ enum Tools {
                             Instead of coordinates, any annotation can take target: 'text in the image' (nth? when it appears more than once, pad? in px):
                             boxes surround the text, counter sits on its top-left corner, arrow points at it from open space (length?), text goes below it, line underlines it.
                             The result's targets list where each was found. If the text isn't found, the error lists the text that is there.
-                            Common: color (hex or red/orange/yellow/green/blue/purple/pink/white/black/gray, default purple #7C5CFF), stroke (line thickness px).
+                            Common: color (hex or red/orange/yellow/green/blue/purple/pink/white/black/gray; by default marks draw in ink that adapts to what's underneath: near-black on light areas, near-white on dark, each with a halo), stroke (line thickness px). Sizes scale with the text in the image.
                             """,
                         "items": [
                             "type": "object",
@@ -252,8 +266,8 @@ enum Tools {
                                 "from": point, "to": point, "at": point,
                                 "x": ["type": "number"], "y": ["type": "number"], "width": ["type": "number"], "height": ["type": "number"],
                                 "text": ["type": "string"], "size": ["type": "number"], "color": ["type": "string"],
-                                "background": ["description": "text: true for a pill in the accent color, or a color string"],
-                                "text_color": ["type": "string"], "bold": ["type": "boolean"], "max_width": ["type": "number"],
+                                "background": ["description": "text: true for a tag in the mark's ink, or a color string"],
+                                "text_color": ["type": "string"], "font": ["type": "string"], "bold": ["type": "boolean"], "max_width": ["type": "number"],
                                 "number": ["type": "number"], "label": ["type": "string"], "fill": ["description": "true or a color"],
                                 "amount": ["type": "number"], "shape": ["type": "string"], "opacity": ["type": "number"], "stroke": ["type": "number"],
                             ],
@@ -297,7 +311,7 @@ enum Tools {
         ],
         [
             "name": "find_sensitive",
-            "description": "Check an image for sensitive text before sharing it: API keys and tokens, passwords, JWTs, private keys, emails, card numbers and phone numbers (and faces with faces: true). Returns each finding's kind, a masked preview and its box in input pixels; full values are never returned. Use compose with redact_sensitive to cover them.",
+            "description": "Check an image for sensitive text before sharing it: API keys and tokens, passwords, JWTs, private keys, emails, card numbers and phone numbers (and faces with faces: true). Returns each finding's kind, a masked preview and its box in input pixels; full values are never returned. compose covers them by default.",
             "inputSchema": [
                 "type": "object",
                 "required": ["input"],

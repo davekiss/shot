@@ -9,7 +9,7 @@
   "plugins": [
     {
       "name": "shot",
-      "version": "0.1.2",
+      "version": "0.1.3",
       "source": "./claude-mod",
       "description": "Capture, mark up, redact and find screenshots without taking focus: the shot MCP server, a skill, /shot and a history pane"
     }

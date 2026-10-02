@@ -29,7 +29,7 @@ After you look at the preview, call `annotate` with a sentence or two on what it
 
 Coordinates in `compose` and `ocr` are pixels of the full-size image, with the origin at the top left. Previews are downscaled, so a position you read off a preview has to be divided by `preview_scale`.
 
-To point at something with visible text, skip coordinates entirely: give the annotation `target: "the text"` and shot finds it. Boxes (rect, ellipse, highlight, spotlight, redact, blur) surround it, a counter sits on its top-left corner, an arrow points at it through empty space, a text label goes below it, and a line underlines it. Use `nth` when the text appears more than once. `crop: {"target": "Billing", "pad": 120}` crops around text the same way. The result's `targets` list says what matched where; if nothing matches, the error lists the text that is in the image, so pick from that rather than guessing.
+To point at something with visible text, skip coordinates entirely: give the annotation `target: "the text"` and shot finds it. Boxes (rect, ellipse, highlight, spotlight, redact, blur) surround it, a counter sits on its top-left corner, an arrow points at it through empty space, a text label goes below it, and a line underlines it. Use `nth` when the text appears more than once. Give an `arrow` and a `text` label the same target and they become a callout, with the label at the arrow's tail. `crop: {"target": "Billing", "pad": 120}` crops around the line that text is on; pass a list of targets to frame several lines. The result's `targets` list says what matched where; if nothing matches, the error lists the text that is in the image, so pick from that rather than guessing.
 
 ```json
 {"input": "shot.png", "annotations": [
@@ -46,10 +46,12 @@ For things without text (icons, images), work out coordinates yourself: `ocr` gi
 `compose` writes a new PNG and leaves the original alone. It runs crop → auto_balance → annotations → background, and annotation coordinates always refer to the original input, even when you also crop.
 
 - **Share-ready image:** `auto_balance: true` plus a `background` (a gradient `preset`, `wallpaper`, or `blurred`). Add `ratio: "16:9"` for slides or social posts.
-- **Before sharing anything:** pass `redact_sensitive: true` to cover API keys, tokens, passwords, JWTs, private keys, emails, card numbers and phone numbers with solid boxes, leaving labels like `GITHUB_TOKEN=` readable. Add `redact_faces: true` when real people's faces shouldn't be shown; leave it off when avatars are the point. `find_sensitive` reports the same findings without editing. Results show masked previews only; never try to recover the values. Detection works from OCR, so it can't judge personal content like private messages: blur those yourself.
+- **Secrets are covered by default:** every `compose` covers API keys, tokens, passwords, JWTs, private keys, emails, card numbers and phone numbers with solid boxes, leaving labels like `GITHUB_TOKEN=` readable. Pass `redact_sensitive: false` only when the user wants that text shown, and say so. Add `redact_faces: true` when real people's faces shouldn't be shown; leave it off when avatars are the point. `find_sensitive` reports the same findings without editing. Results show masked previews only; never try to recover the values. Detection works from OCR, so it can't judge personal content like private messages: blur those yourself.
 - **Hiding by hand:** use `redact`, a solid box, for anything that must not be readable. `pixelate` and `blur` are for de-emphasizing; short text under them can sometimes still be made out.
 - **Walkthroughs:** `counter` annotations auto-number 1, 2, 3 in the order you list them. Pair them with `text` labels or a `spotlight` to focus on one area.
 - `copy: true` also puts the result on the clipboard, ready to paste into Slack or a doc.
+- **Type:** labels and counters default to shot's pixel face. When the image is for a general audience (docs, a customer email), `"font": "clean"` or `"rounded"` reads more plainly; `serif` suits editorial, `mono` suits code. Respect a `SHOT_FONT` the user has set, and don't pass `font` unless there's a reason.
+- **Color:** leave `color` off and marks pick ink that contrasts with what's underneath. Set it only when the user asks for a color or the image needs one specific accent.
 
 ## When a capture fails
 

@@ -2,7 +2,7 @@
   "mcpServers": {
     "shot": {
       "command": "${CLAUDE_PLUGIN_ROOT}/bin/shot",
-      "env": { "SHOT_DESCRIBE": "${SHOT_DESCRIBE:-off}" }
+      "env": { "SHOT_DESCRIBE": "${SHOT_DESCRIBE:-off}", "SHOT_FONT": "${SHOT_FONT:-pixel}" }
     }
   }
 }

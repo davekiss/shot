@@ -4,6 +4,8 @@ import Vision
 /// Vision text observations for one image, kept so a range inside a line can
 /// be boxed exactly (Vision measures sub-ranges itself; splitting the line's
 /// box by character count would drift on proportional fonts).
+struct Hit { let text: String; let rect: CGRect; let line: CGRect }
+
 struct OCRText {
     let observations: [VNRecognizedTextObservation]
     let size: CGSize
@@ -22,6 +24,13 @@ struct OCRText {
     }
 
     var lines: [String] { observations.compactMap(text) }
+
+    /// Median height of a line of text, in pixels: the scale marks should
+    /// be drawn at, so they match what they point at.
+    var textHeight: CGFloat? {
+        let hs = observations.map { $0.boundingBox.height * size.height }.sorted()
+        return hs.isEmpty ? nil : hs[hs.count / 2]
+    }
 
     /// Vision sometimes returns a Cyrillic or Greek letter that looks exactly
     /// like a Latin one ("GITHUB_ТOKEN" with a Cyrillic Т), which would stop
@@ -63,18 +72,31 @@ struct OCRText {
     /// Every place `query` appears, in reading order. When some lines are
     /// exactly the query, only those count, so "Bot" finds the "Bot" button
     /// rather than the first sentence that mentions bots.
-    func find(_ query: String) -> [(text: String, rect: CGRect)] {
+    /// `rect` is the matched text; `line` is the whole line it sits on.
+    func find(_ query: String) -> [Hit] {
         let opts: String.CompareOptions = [.caseInsensitive, .diacriticInsensitive]
-        var exact: [(String, CGRect)] = [], partial: [(String, CGRect)] = []
+        // Whole lines beat whole words beat fragments, so "PORT" finds
+        // "PORT=3000" before the middle of "SUPPORT_EMAIL".
+        var exact: [Hit] = [], word: [Hit] = [], partial: [Hit] = []
+        func isWordChar(_ c: Character) -> Bool { c.isLetter || c.isNumber }
         for obs in observations {
-            guard let s = text(obs), let r = s.range(of: query, options: opts) else { continue }
+            guard let s = text(obs) else { continue }
             if s.trimmingCharacters(in: .whitespaces).compare(query, options: opts) == .orderedSame {
-                exact.append((s, rect(obs)))
-            } else {
-                partial.append((s, rect(obs, r)))
+                exact.append(Hit(text: s, rect: rect(obs), line: rect(obs)))
+                continue
             }
+            var from = s.startIndex, best: (Range<String.Index>, Bool)?
+            while let r = s.range(of: query, options: opts, range: from..<s.endIndex) {
+                let whole = (r.lowerBound == s.startIndex || !isWordChar(s[s.index(before: r.lowerBound)]))
+                    && (r.upperBound == s.endIndex || !isWordChar(s[r.upperBound]))
+                if best == nil || (whole && !best!.1) { best = (r, whole) }
+                if whole { break }
+                from = s.index(after: r.lowerBound)
+            }
+            guard let (r, whole) = best else { continue }
+            (whole ? { word.append($0) } : { partial.append($0) })(Hit(text: s, rect: rect(obs, r), line: rect(obs)))
         }
-        return exact.isEmpty ? partial : exact
+        return !exact.isEmpty ? exact : !word.isEmpty ? word : partial
     }
 }
 
@@ -88,7 +110,7 @@ enum Targets {
         (a["crop"] as? Args)?["target"] != nil || (a["annotations"] as? [Args])?.contains { $0["target"] != nil } == true
     }
 
-    static func locate(_ spec: Args, in ocr: OCRText, label: String) throws -> (text: String, rect: CGRect) {
+    static func locate(_ spec: Args, in ocr: OCRText, label: String) throws -> Hit {
         guard let query = spec["target"] as? String, !query.isEmpty else { throw ShotError("\(label): target must be text to look for") }
         let hits = ocr.find(query)
         let nth = Int(num(spec, "nth") ?? 1)
@@ -102,61 +124,188 @@ enum Targets {
 
     /// Fills in coordinates for every annotation with a `target`, in input
     /// pixels. Coordinates the caller gave explicitly win.
-    static func resolve(_ anns: [Args], ocr: OCRText, unit: CGFloat, found: inout [Args]) throws -> [Args] {
-        let W = ocr.size.width, H = ocr.size.height
-        return try anns.enumerated().map { i, a0 in
-            guard a0["target"] != nil else { return a0 }
+    /// `visible` is the part of the image that will survive a crop: marks are
+    /// placed inside it, so a label never lands where it will be cut off.
+    static func resolve(_ anns: [Args], ocr: OCRText, unit: CGFloat, visible: CGRect? = nil, found: inout [Args]) throws -> [Args] {
+        let bounds = visible ?? CGRect(origin: .zero, size: ocr.size)
+        // Marks already on the image count as obstacles for the ones placed
+        // after them, so nothing lands on anything else.
+        var placed = anns.filter { $0["target"] == nil }.compactMap { extent($0, unit) }
+        var labels: [Int] = []
+        var out = anns
+        func free(_ r: CGRect, _ obstacles: [CGRect]) -> Bool { bounds.contains(r) && !obstacles.contains { $0.intersects(r) } }
+        for (i, a0) in anns.enumerated() {
+            guard a0["target"] != nil else { continue }
             var a = a0
             let type = a["type"] as? String ?? ""
             let hit = try locate(a, in: ocr, label: "annotation \(i) (\(type))")
+            let blocked = obstacles(ocr, around: hit.rect, line: hit.line, gap: unit * 0.5) + placed
+            // Padding never reaches halfway to the next line or mark, so boxes
+            // on tightly set text don't swallow their neighbors.
+            let room = clearance(hit.rect, blocked, in: bounds)
             let tight = ["highlight", "redact", "pixelate", "blur", "line"].contains(type)
-            let pad = CGFloat(num(a, "pad") ?? Double(unit * (tight ? 0.4 : 1.2)))
-            let r = hit.rect.insetBy(dx: -pad, dy: -pad)
-            func setBox() {
-                if a["x"] == nil { a["x"] = r.minX; a["y"] = r.minY; a["width"] = r.width; a["height"] = r.height }
-            }
+            let want = CGFloat(num(a, "pad") ?? Double(unit * (tight ? 0.4 : 1.2)))
+            let padX = a["pad"] != nil ? want : min(want, max(unit * 0.3, min(room.left, room.right) * 0.45))
+            let padY = a["pad"] != nil ? want : min(want, max(unit * 0.3, min(room.above, room.below) * 0.45))
+            let r = hit.rect.insetBy(dx: -padX, dy: -padY)
             switch type {
-            case "rect", "rectangle", "ellipse", "circle", "highlight", "redact", "pixelate", "blur", "spotlight":
-                setBox()
+            case "ellipse", "circle":
+                // An ellipse inscribed in the text's box clips its corners;
+                // widening it by about a fifth clears them.
+                let e = r.insetBy(dx: -min(r.width * 0.12, room.left * 0.5, room.right * 0.5), dy: 0)
+                if a["x"] == nil { a["x"] = e.minX; a["y"] = e.minY; a["width"] = e.width; a["height"] = e.height }
+            case "rect", "rectangle", "highlight", "redact", "pixelate", "blur", "spotlight":
+                if a["x"] == nil { a["x"] = r.minX; a["y"] = r.minY; a["width"] = r.width; a["height"] = r.height }
             case "counter":
-                if a["at"] == nil { a["at"] = [r.minX, r.minY] }
+                // Beside the text like a step marker; else above, right, below,
+                // or further left. With no clean spot, the least-covering one.
+                var radius = CGFloat(num(a, "size") ?? Double(Annotator.counterRadius(unit)))
+                // In a narrow margin, a slightly smaller step marker beside
+                // the text beats a full-size one on top of it.
+                let fit = (room.left - unit * 0.6) / 2
+                if a["size"] == nil, fit < radius, fit >= radius * 0.62,
+                   !blocked.contains(where: { $0.intersects(CGRect(x: hit.rect.minX - unit * 0.6 - fit * 2, y: hit.rect.midY - fit, width: fit * 2, height: fit * 2)) }) {
+                    radius = fit
+                    a["size"] = radius
+                }
+                let g = unit * 0.6 + radius, T = hit.rect
+                let spots = [CGPoint(x: T.minX - g, y: T.midY), CGPoint(x: T.minX + radius, y: T.minY - g),
+                             CGPoint(x: T.maxX + g, y: T.midY), CGPoint(x: T.minX + radius, y: T.maxY + g),
+                             CGPoint(x: T.minX - g - radius * 1.5, y: T.midY), CGPoint(x: T.minX - radius * 0.2, y: T.minY - radius * 0.2)]
+                func circle(_ c: CGPoint) -> CGRect { CGRect(x: c.x - radius, y: c.y - radius, width: radius * 2, height: radius * 2) }
+                let pick = spots.first { free(circle($0), blocked) } ?? spots.min { overlap(circle($0), blocked, bounds) < overlap(circle($1), blocked, bounds) }!
+                if a["at"] == nil { a["at"] = [pick.x, pick.y] }
             case "line":
-                let y = hit.rect.maxY + unit * 0.6
+                let y = hit.rect.maxY + min(unit * 0.6, room.below * 0.4)
                 if a["from"] == nil { a["from"] = [hit.rect.minX, y]; a["to"] = [hit.rect.maxX, y] }
             case "text":
-                // Below the target, or above it when there's no room underneath.
-                let size = CGFloat(num(a, "size") ?? Double(unit * 2.4))
-                let below = r.maxY + unit, above = r.minY - unit - size * 1.8
-                if a["at"] == nil { a["at"] = [r.minX, below + size * 1.8 > H && above > 0 ? above : below] }
+                if a["at"] == nil {
+                    // Below the target, else above, else to its right.
+                    let (w, h) = labelSize(a, unit)
+                    let spots = [CGPoint(x: r.minX, y: r.maxY + unit), CGPoint(x: r.minX, y: r.minY - unit - h),
+                                 CGPoint(x: r.maxX + unit, y: r.midY - h / 2)]
+                    func label(_ p: CGPoint) -> CGRect { CGRect(origin: p, size: CGSize(width: w, height: h)) }
+                    let pick = spots.first { free(label($0), blocked) } ?? spots.min { overlap(label($0), blocked, bounds) < overlap(label($1), blocked, bounds) }!
+                    a["at"] = [pick.x, pick.y]
+                    labels.append(i)
+                }
             case "arrow":
-                let len = CGFloat(num(a, "length") ?? Double(unit * 12))
-                let (from, to) = arrow(at: r, length: len, avoiding: ocr, except: hit.rect)
+                let len = CGFloat(num(a, "length") ?? Double(unit * 14))
+                // When a label rides this arrow, its box counts as part of the
+                // arrow, so the pair lands in open space together.
+                let label = anns.first { $0["type"] as? String == "text" && $0["at"] == nil
+                    && $0["target"] as? String == a["target"] as? String && num($0, "nth") == num(a, "nth") }
+                let (from, to) = arrow(at: r, length: len, avoiding: obstacles(ocr, around: hit.rect, line: hit.line, gap: unit) + placed,
+                                       bounds: bounds, label: label, unit: unit)
                 if a["to"] == nil { a["to"] = [to.x, to.y] }
                 if a["from"] == nil { a["from"] = [from.x, from.y] }
             default:
                 break
             }
+            if let e = extent(a, unit) { placed.append(e) }
             found.append(["annotation": i, "target": a["target"] ?? "", "matched": hit.text,
                           "box": [Int(hit.rect.minX), Int(hit.rect.minY), Int(hit.rect.width), Int(hit.rect.height)]])
-            return a
+            out[i] = a
         }
+        // A label and an arrow aimed at the same text make a callout: the
+        // label moves to the arrow's tail instead of sitting under the target.
+        for i in labels {
+            let same = { (b: Args) in b["target"] as? String == out[i]["target"] as? String && num(b, "nth") == num(out[i], "nth") }
+            guard let arrow = out.first(where: { $0["type"] as? String == "arrow" && same($0) }),
+                  let from = point(arrow["from"]), let to = point(arrow["to"]) else { continue }
+            out[i]["at"] = callout(out[i], tail: from, head: to, unit: unit)
+        }
+        return out
+    }
+
+    /// The area a resolved mark covers, for keeping later marks off it.
+    /// Arrows are thin and cross things by design, so they don't count.
+    static func extent(_ a: Args, _ unit: CGFloat) -> CGRect? {
+        switch a["type"] as? String ?? "" {
+        case "rect", "rectangle", "ellipse", "circle", "highlight", "redact":
+            return box(a)
+        case "counter":
+            guard let c = point(a["at"]) else { return nil }
+            let r = CGFloat(num(a, "size") ?? Double(Annotator.counterRadius(unit))) * 1.15
+            return CGRect(x: c.x - r, y: c.y - r, width: r * 2, height: r * 2)
+        case "text":
+            guard let p = point(a["at"]) else { return nil }
+            let (w, h) = labelSize(a, unit)
+            return CGRect(x: p.x, y: p.y, width: w, height: h)
+        case "line":
+            guard let p0 = point(a["from"]), let p1 = point(a["to"]) else { return nil }
+            return CGRect(x: min(p0.x, p1.x), y: min(p0.y, p1.y) - unit, width: abs(p1.x - p0.x), height: abs(p1.y - p0.y) + unit * 2)
+        default:
+            return nil
+        }
+    }
+
+    /// Free space around `t` in each direction before the nearest obstacle or edge.
+    static func clearance(_ t: CGRect, _ obstacles: [CGRect], in bounds: CGRect) -> (left: CGFloat, right: CGFloat, above: CGFloat, below: CGFloat) {
+        var l = t.minX - bounds.minX, r = bounds.maxX - t.maxX, a = t.minY - bounds.minY, b = bounds.maxY - t.maxY
+        for o in obstacles where !o.intersects(t) {
+            if o.maxX > t.minX && o.minX < t.maxX {
+                if o.maxY <= t.minY { a = min(a, t.minY - o.maxY) }
+                if o.minY >= t.maxY { b = min(b, o.minY - t.maxY) }
+            }
+            if o.maxY > t.minY && o.minY < t.maxY {
+                if o.maxX <= t.minX { l = min(l, t.minX - o.maxX) }
+                if o.minX >= t.maxX { r = min(r, o.minX - t.maxX) }
+            }
+        }
+        return (max(0, l), max(0, r), max(0, a), max(0, b))
+    }
+
+    /// How much of `r` is covered by obstacles or falls off the image.
+    static func overlap(_ r: CGRect, _ obstacles: [CGRect], _ bounds: CGRect) -> CGFloat {
+        let off = r.width * r.height - { let i = r.intersection(bounds); return i.isNull ? 0 : i.width * i.height }()
+        return obstacles.reduce(off * 2) { acc, o in let i = r.intersection(o); return acc + (i.isNull ? 0 : i.width * i.height) }
+    }
+
+    /// Outer size of a text label as Annotator draws it, tag padding included.
+    static func labelSize(_ a: Args, _ unit: CGFloat) -> (CGFloat, CGFloat) {
+        let size = Annotator.textSize(a, unit)
+        let bg = a["background"] is String || (a["background"] as? NSNumber)?.boolValue == true
+        let font = Fonts.font(a["font"] as? String, size: size, bold: flag(a, "bold", true))
+        let t = ((a["text"] as? String ?? "") as NSString).size(withAttributes: [.font: font, .kern: Fonts.kern(font)])
+        return (t.width + (bg ? size * 1.2 : 0), t.height + (bg ? size * 0.6 : 0))
+    }
+
+    /// Top-left for a text label so its edge meets an arrow's tail on the far side from the head.
+    static func callout(_ a: Args, tail: CGPoint, head: CGPoint, unit: CGFloat) -> [CGFloat] {
+        let (w, h) = labelSize(a, unit)
+        let dx = tail.x - head.x, dy = tail.y - head.y, gap = unit * 0.4
+        if abs(dx) >= abs(dy) * 0.5 {
+            return [dx < 0 ? tail.x - gap - w : tail.x + gap, tail.y - h / 2]
+        }
+        return [tail.x - w / 2, dy > 0 ? tail.y + gap : tail.y - gap - h]
+    }
+
+    /// Every other line of text, plus the rest of the target's own line on
+    /// either side of it: the places a mark shouldn't land.
+    static func obstacles(_ ocr: OCRText, around hit: CGRect, line: CGRect, gap: CGFloat) -> [CGRect] {
+        ocr.observations.map { ocr.rect($0) }.filter { !$0.intersects(line) } + [
+            CGRect(x: line.minX, y: line.minY, width: max(0, hit.minX - gap - line.minX), height: line.height),
+            CGRect(x: hit.maxX + gap, y: line.minY, width: max(0, line.maxX - hit.maxX - gap), height: line.height),
+        ].filter { $0.width > 0 }
     }
 
     /// An arrow ending at the edge of `r`, coming from whichever of eight
     /// directions crosses the least other text and stays inside the image.
     /// Diagonals come first, so they win ties: they read as pointing.
-    static func arrow(at r: CGRect, length: CGFloat, avoiding ocr: OCRText, except: CGRect) -> (CGPoint, CGPoint) {
-        let bounds = CGRect(origin: .zero, size: ocr.size)
-        let others = ocr.observations.map { ocr.rect($0) }.filter { !$0.intersects(except) }
+    static func arrow(at r: CGRect, length: CGFloat, avoiding others: [CGRect], bounds: CGRect,
+                      label: Args? = nil, unit: CGFloat = 1) -> (CGPoint, CGPoint) {
         let c = CGPoint(x: r.midX, y: r.midY)
         let s = CGFloat(0.7071)
         let dirs = [(-s, s), (s, s), (-s, -s), (s, -s), (-1, 0), (1, 0), (0, 1), (0, -1)].map { CGPoint(x: $0.0, y: $0.1) }
-        var best: (score: Int, from: CGPoint, to: CGPoint)?
-        for d in dirs {
+        // Longer arrows reach open space on crowded screens; a crossing costs
+        // far more than extra length, so short wins whenever it's clean.
+        var best: (score: Double, from: CGPoint, to: CGPoint)?
+        for d in dirs { for stretch in [1.0, 1.6, 2.4, 3.4] as [CGFloat] {
             let t = min(r.width / 2 / max(abs(d.x), 0.001), r.height / 2 / max(abs(d.y), 0.001))
             let to = CGPoint(x: c.x + d.x * t, y: c.y + d.y * t)
-            let from = CGPoint(x: to.x + d.x * length, y: to.y + d.y * length)
-            var score = bounds.insetBy(dx: 4, dy: 4).contains(from) ? 0 : 100
+            let from = CGPoint(x: to.x + d.x * length * stretch, y: to.y + d.y * length * stretch)
+            var score: Double = (bounds.insetBy(dx: 4, dy: 4).contains(from) ? 0 : 100) + Double(stretch - 1) * 0.8
             // Sample along the shaft; each text line it passes over costs one.
             var crossed = Set<Int>()
             for k in 1...12 {
@@ -164,17 +313,28 @@ enum Targets {
                 let p = CGPoint(x: to.x + (from.x - to.x) * f, y: to.y + (from.y - to.y) * f)
                 for (i, o) in others.enumerated() where o.insetBy(dx: -4, dy: -4).contains(p) { crossed.insert(i) }
             }
-            score += crossed.count
+            score += Double(crossed.count) * 3
+            if let label {
+                let at = callout(label, tail: from, head: to, unit: unit), (w, h) = labelSize(label, unit)
+                let box = CGRect(x: at[0], y: at[1], width: w, height: h)
+                score += (bounds.contains(box) ? 0 : 50) + Double(others.filter { $0.intersects(box) }.count) * 4
+            }
             if best == nil || score < best!.score { best = (score, from, to) }
-        }
+        } }
         return (best!.from, best!.to)
     }
 
     /// `crop: {target, pad?}`: the target's box plus generous room, clamped to the image.
+    /// `target` may be a list, to frame several lines at once.
     static func crop(_ spec: Args, ocr: OCRText, unit: CGFloat) throws -> CGRect {
-        let hit = try locate(spec, in: ocr, label: "crop")
+        let targets = spec["target"] as? [String] ?? [spec["target"] as? String ?? ""]
+        let lines = try targets.map { t -> CGRect in
+            var one = spec; one["target"] = t
+            return try locate(one, in: ocr, label: "crop").line
+        }
         let pad = CGFloat(num(spec, "pad") ?? Double(unit * 12))
-        return hit.rect.insetBy(dx: -pad, dy: -pad).intersection(CGRect(origin: .zero, size: ocr.size))
+        return lines.dropFirst().reduce(lines[0]) { $0.union($1) }
+            .insetBy(dx: -pad, dy: -pad).intersection(CGRect(origin: .zero, size: ocr.size))
     }
 }
 

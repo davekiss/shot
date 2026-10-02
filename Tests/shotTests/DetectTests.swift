@@ -125,6 +125,39 @@ final class TargetTests: XCTestCase {
         XCTAssertEqual(found.first?["matched"] as? String, "Save")
     }
 
+    func testWholeWordsBeatFragments() throws {
+        let img = render(["SUPPORT_EMAIL=help", "PORT=3000"], size: 36, width: 1000)
+        var found: [Args] = []
+        _ = try Targets.resolve([["type": "ellipse", "target": "PORT"]], ocr: OCRText(img), unit: 5, found: &found)
+        let matched = try XCTUnwrap(found.first?["matched"] as? String)
+        XCTAssertTrue(matched.hasPrefix("PORT") && !matched.contains("SUPPORT"), matched)
+    }
+
+    func testMarksOnAdjacentLinesDontTouch() throws {
+        // Tightly set terminal lines: a box on one and a circle on the next
+        // must not run into each other or into the line between.
+        let img = render(["ONCALL_PHONE=(555) 867-5309", "LOG_LEVEL=debug", "PORT=3000"], size: 32, width: 1200)
+        let ocr = OCRText(img)
+        var found: [Args] = []
+        let out = try Targets.resolve([["type": "rect", "target": "LOG_LEVEL"], ["type": "ellipse", "target": "PORT"]],
+                                      ocr: ocr, unit: 9, found: &found)
+        let rect = try XCTUnwrap(box(out[0])), ellipse = try XCTUnwrap(box(out[1]))
+        let phone = try XCTUnwrap(ocr.find("ONCALL").first).line
+        XCTAssertFalse(rect.intersects(ellipse), "box \(rect) runs into circle \(ellipse)")
+        XCTAssertFalse(rect.intersects(phone), "box \(rect) swallows the line above \(phone)")
+    }
+
+    func testLabelsStayInsideTheCrop() throws {
+        let img = render(["Read the docs"], size: 40, width: 1400, mono: false, at: [CGPoint(x: 500, y: 600)], height: 1000)
+        let ocr = OCRText(img)
+        let visible = try XCTUnwrap(ocr.find("Read the docs").first).line.insetBy(dx: -300, dy: -40)
+        var found: [Args] = []
+        let out = try Targets.resolve([["type": "text", "target": "Read the docs", "text": "Start here", "background": true]],
+                                      ocr: ocr, unit: 6, visible: visible, found: &found)
+        let at = try XCTUnwrap(point(out[0]["at"])), (w, h) = Targets.labelSize(out[0], 6)
+        XCTAssertTrue(visible.contains(CGRect(x: at.x, y: at.y, width: w, height: h)), "label falls outside the crop")
+    }
+
     func testMissingTextListsWhatIsThere() {
         let img = render(["Save", "Cancel"], size: 40, width: 800, mono: false)
         var found: [Args] = []
@@ -132,6 +165,63 @@ final class TargetTests: XCTestCase {
             let msg = (e as? ShotError).map { "\($0)" } ?? "\(e)"
             XCTAssertTrue(msg.contains("Cancel"), msg)
         }
+    }
+
+    func testCounterSitsBesideTheTextNotOnIt() throws {
+        let img = render(["Pricing"], size: 40, width: 1000, mono: false, at: [CGPoint(x: 500, y: 200)], height: 500)
+        let ocr = OCRText(img)
+        let text = try XCTUnwrap(ocr.find("Pricing").first).rect
+        var found: [Args] = []
+        let out = try Targets.resolve([["type": "counter", "target": "Pricing"]], ocr: ocr, unit: 6, found: &found)
+        let at = try XCTUnwrap(point(out[0]["at"]))
+        XCTAssertLessThanOrEqual(at.x + Annotator.counterRadius(6), text.minX, "counter overlaps the text")
+        XCTAssertEqual(at.y, text.midY, accuracy: 4)
+    }
+
+    func testCounterMovesAboveWhenTheLeftIsTaken() throws {
+        // "Developers" sits right where the counter for "Pricing" would go.
+        let img = render(["Developers", "Pricing"], size: 40, width: 1200, mono: false,
+                         at: [CGPoint(x: 300, y: 300), CGPoint(x: 540, y: 300)], height: 700)
+        let ocr = OCRText(img)
+        let developers = try XCTUnwrap(ocr.find("Developers").first).rect
+        var found: [Args] = []
+        let out = try Targets.resolve([["type": "counter", "target": "Pricing"]], ocr: ocr, unit: 6, found: &found)
+        let at = try XCTUnwrap(point(out[0]["at"])), r = Annotator.counterRadius(6)
+        XCTAssertFalse(CGRect(x: at.x - r, y: at.y - r, width: r * 2, height: r * 2).intersects(developers), "counter covers Developers")
+    }
+
+    func testLabelAndArrowOnTheSameTargetMakeACallout() throws {
+        let img = render(["Read the docs"], size: 40, width: 1400, mono: false, at: [CGPoint(x: 600, y: 400)], height: 900)
+        var found: [Args] = []
+        let out = try Targets.resolve([
+            ["type": "arrow", "target": "Read the docs"],
+            ["type": "text", "target": "Read the docs", "text": "Start here", "background": true],
+        ], ocr: OCRText(img), unit: 6, found: &found)
+        let tail = try XCTUnwrap(point(out[0]["from"])), at = try XCTUnwrap(point(out[1]["at"]))
+        // The arrow's tail should touch the label's pill (within a few px), wherever it lands.
+        let (w, h) = Targets.labelSize(["text": "Start here", "background": true], 6)
+        let pill = CGRect(x: at.x, y: at.y, width: w, height: h)
+        let dx = max(pill.minX - tail.x, 0, tail.x - pill.maxX), dy = max(pill.minY - tail.y, 0, tail.y - pill.maxY)
+        XCTAssertLessThan(hypot(dx, dy), 6, "label \(pill) doesn't meet the arrow tail \(tail)")
+    }
+
+    func testCropKeepsTheWholeLine() throws {
+        let line = "Stream it, moderate it, search it, analyze it"
+        let img = render([line], size: 36, width: 1600, mono: false, at: [CGPoint(x: 200, y: 300)], height: 700)
+        let ocr = OCRText(img)
+        let whole = try XCTUnwrap(ocr.find(line).first).rect
+        let r = try Targets.crop(["target": "moderate it", "pad": 10], ocr: ocr, unit: 6)
+        XCTAssertLessThanOrEqual(r.minX, whole.minX)
+        XCTAssertGreaterThanOrEqual(r.maxX, whole.maxX)
+    }
+
+    func testCropFramesEveryListedLine() throws {
+        let img = render(["First line of copy", "Second line of copy"], size: 36, width: 1200, mono: false,
+                         at: [CGPoint(x: 200, y: 200), CGPoint(x: 200, y: 400)], height: 700)
+        let ocr = OCRText(img)
+        let second = try XCTUnwrap(ocr.find("Second line").first).line
+        let r = try Targets.crop(["target": ["First line", "Second line"], "pad": 10], ocr: ocr, unit: 6)
+        XCTAssertTrue(r.contains(second), "crop \(r) misses the second line \(second)")
     }
 
     func testArrowStaysClearOfOtherText() throws {
@@ -150,5 +240,58 @@ final class TargetTests: XCTestCase {
             let p = CGPoint(x: to.x + (from.x - to.x) * f, y: to.y + (from.y - to.y) * f)
             XCTAssertFalse(others.contains { $0.contains(p) }, "arrow crosses text at \(p)")
         }
+    }
+}
+
+final class FontTests: XCTestCase {
+    func testPixelIsTheEmbeddedDepartureMono() {
+        XCTAssertTrue(Fonts.font("pixel", size: 22, bold: true).fontName.contains("Departure"))
+    }
+
+    func testPixelSnapsToItsGrid() {
+        XCTAssertEqual(Fonts.font("pixel", size: 30, bold: false).pointSize, 33)
+    }
+
+    func testUnknownFontFallsBackToTheSystemFace() {
+        let f = Fonts.font("No Such Font 123", size: 20, bold: false)
+        XCTAssertEqual(f.pointSize, 20)
+        XCTAssertFalse(f.fontName.contains("No Such"))
+    }
+}
+
+final class ComposeTests: XCTestCase {
+    var dir: URL!
+
+    override func setUpWithError() throws {
+        dir = FileManager.default.temporaryDirectory.appendingPathComponent("shot-tests-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        // Keep test output out of the real ~/Screenshots index.
+        setenv("SHOT_LIBRARY", dir.path, 1)
+    }
+
+    override func tearDown() { unsetenv("SHOT_LIBRARY") }
+
+    func input() throws -> String {
+        let path = dir.appendingPathComponent("in.png").path
+        try writePNG(render(["GITHUB_TOKEN=ghp_8fKz2LqP9xR4tV7bN1mC5dH3jW6yA0sE", "LOG_LEVEL=debug"]), to: path)
+        return path
+    }
+
+    func testComposeCoversSecretsWithoutBeingAsked() throws {
+        let result = try Tools.compose(["input": try input(), "output": dir.appendingPathComponent("out.png").path, "preview": false])
+        let redacted = try XCTUnwrap(result.info["redacted"] as? [Args])
+        XCTAssertTrue(redacted.contains { $0["kind"] as? String == "secret" }, "\(redacted)")
+        XCTAssertNotNil(result.info["redacted_note"])
+    }
+
+    func testRedactionCanBeTurnedOff() throws {
+        let result = try Tools.compose(["input": try input(), "output": dir.appendingPathComponent("out.png").path,
+                                        "preview": false, "redact_sensitive": false])
+        XCTAssertNil(result.info["redacted"])
+    }
+
+    func testTheLibraryOverrideKeepsTheRealIndexUntouched() throws {
+        _ = try Tools.compose(["input": try input(), "output": dir.appendingPathComponent("out.png").path, "preview": false])
+        XCTAssertTrue(FileManager.default.fileExists(atPath: dir.appendingPathComponent(".shot-index.json").path))
     }
 }

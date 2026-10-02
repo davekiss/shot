@@ -1,6 +1,31 @@
 import AppKit
 import CoreImage
 
+/// What a mark is drawn in: the ink, and the halo keyline that separates it from what's underneath.
+struct Ink {
+    let ink: CGColor, halo: CGColor
+
+    static let dark = CGColor(srgbRed: 0.08, green: 0.08, blue: 0.08, alpha: 1)
+    static let light = CGColor(srgbRed: 0.97, green: 0.97, blue: 0.96, alpha: 1)
+
+    /// The halo always matches what's underneath, so it separates the mark
+    /// without outlining it. With no color given, the ink is the opposite:
+    /// near-black on light screens, near-white on dark ones.
+    static func resolve(_ value: Any?, over region: CGRect, in img: CGImage) -> Ink {
+        let bright = region.isEmpty ? true : Annotator.luminance(img, region) > 0.5
+        let halo = bright ? light.copy(alpha: 0.95)! : dark.copy(alpha: 0.85)!
+        if value != nil { return Ink(ink: color(value, defaultColor), halo: halo) }
+        return Ink(ink: bright ? dark : light, halo: halo)
+    }
+
+    static func opposite(of c: CGColor) -> CGColor { luminance(of: c) < 0.6 ? light : dark }
+
+    static func luminance(of c: CGColor) -> Double {
+        guard let s = c.converted(to: CGColorSpace(name: CGColorSpace.sRGB)!, intent: .defaultIntent, options: nil)?.components, s.count >= 3 else { return 0 }
+        return 0.2126 * Double(s[0]) + 0.7152 * Double(s[1]) + 0.0722 * Double(s[2])
+    }
+}
+
 /// Draws annotations onto an image. Coordinates are pixels of the original input, top-left origin;
 /// `offset` is where the current image starts within that input (after crop/balance).
 enum Annotator {
@@ -23,11 +48,11 @@ enum Annotator {
         if !spots.isEmpty { try spotlight(ctx, spots, offset, CGRect(x: 0, y: 0, width: W, height: H), unit) }
 
         var counter = 0
+        let bounds = CGRect(x: 0, y: 0, width: W, height: H)
         for (i, a) in anns.enumerated() {
             let type = a["type"] as? String ?? ""
-            let col = color(a["color"], defaultColor)
             let isLine = type == "arrow" || type == "line"
-            let w = CGFloat(num(a, "stroke") ?? (isLine ? num(a, "width") : nil) ?? Double(unit))
+            let w = CGFloat(num(a, "stroke") ?? (isLine ? num(a, "width") : nil) ?? Double(unit * 0.85))
             func rect() throws -> CGRect {
                 guard var r = box(a) else { throw ShotError("annotation \(i) (\(type)) needs x, y, width, height") }
                 r.origin = r.origin - offset
@@ -37,55 +62,56 @@ enum Annotator {
                 guard let p = point(a[key]) else { throw ShotError("annotation \(i) (\(type)) needs \(key) as [x, y]") }
                 return p - offset
             }
+            // Ink is chosen from what sits under the mark (sampled before
+            // anything is drawn), so it reads on light and dark screens alike.
+            func ink(over region: CGRect) -> Ink { Ink.resolve(a["color"], over: region.intersection(bounds), in: img) }
             switch type {
             case "arrow":
-                drawArrow(ctx, from: try pt("from"), to: try pt("to"), width: w, color: col)
+                let p0 = try pt("from"), p1 = try pt("to")
+                let region = CGRect(x: min(p0.x, p1.x), y: min(p0.y, p1.y), width: abs(p1.x - p0.x), height: abs(p1.y - p0.y)).insetBy(dx: -w * 3, dy: -w * 3)
+                drawArrow(ctx, from: p0, to: p1, width: w, ink: ink(over: region))
             case "line":
                 let p0 = try pt("from"), p1 = try pt("to")
-                withShadow(ctx, w) {
-                    ctx.setStrokeColor(col); ctx.setLineWidth(w); ctx.setLineCap(.round)
-                    ctx.move(to: p0); ctx.addLine(to: p1); ctx.strokePath()
-                }
-            case "rect", "rectangle":
+                let path = CGMutablePath(); path.move(to: p0); path.addLine(to: p1)
+                let region = CGRect(x: min(p0.x, p1.x), y: min(p0.y, p1.y), width: abs(p1.x - p0.x), height: abs(p1.y - p0.y)).insetBy(dx: -w * 3, dy: -w * 3)
+                stroke(ctx, path, width: w, ink: ink(over: region))
+            case "rect", "rectangle", "ellipse", "circle":
                 let r = try rect()
-                let path = CGPath(roundedRect: r, cornerWidth: min(w, r.width / 2), cornerHeight: min(w, r.height / 2), transform: nil)
-                withShadow(ctx, w) {
-                    if a["fill"] != nil {
-                        ctx.setFillColor(a["fill"] is String ? color(a["fill"], defaultColor) : col)
-                        ctx.addPath(path); ctx.fillPath()
-                    }
-                    ctx.setStrokeColor(col); ctx.setLineWidth(w); ctx.setLineJoin(.round)
-                    ctx.addPath(path); ctx.strokePath()
+                let path = type.hasPrefix("rect")
+                    ? CGPath(roundedRect: r, cornerWidth: min(w * 1.5, r.width / 2), cornerHeight: min(w * 1.5, r.height / 2), transform: nil)
+                    : CGPath(ellipseIn: r, transform: nil)
+                let k = ink(over: r.insetBy(dx: -w * 2, dy: -w * 2))
+                if a["fill"] != nil {
+                    ctx.setFillColor(a["fill"] is String ? color(a["fill"], defaultColor) : k.ink.copy(alpha: 0.18) ?? k.ink)
+                    ctx.addPath(path); ctx.fillPath()
                 }
-            case "ellipse", "circle":
-                let r = try rect()
-                withShadow(ctx, w) {
-                    if a["fill"] != nil {
-                        ctx.setFillColor(a["fill"] is String ? color(a["fill"], defaultColor) : col)
-                        ctx.fillEllipse(in: r)
-                    }
-                    ctx.setStrokeColor(col); ctx.setLineWidth(w); ctx.strokeEllipse(in: r)
-                }
+                stroke(ctx, path, width: w, ink: k)
             case "redact":
                 ctx.setFillColor(color(a["color"], "#000000")); ctx.fill(try rect())
             case "highlight":
-                // Marker-style multiply only shows on light content; on dark content use a translucent wash.
+                // A marker: multiply on light content, so the text stays crisp;
+                // on dark content multiply vanishes, so add light instead.
                 let r = try rect()
+                let marker = color(a["color"], "#FFE14D")
                 ctx.saveGState()
                 if luminance(img, r) > 0.45 {
-                    ctx.setBlendMode(.multiply)
-                    ctx.setFillColor(color(a["color"], "#FFE14D"))
+                    ctx.setBlendMode(.multiply); ctx.setFillColor(marker)
                 } else {
-                    ctx.setFillColor(color(a["color"], "#FFE14D").copy(alpha: 0.32) ?? CGColor(gray: 1, alpha: 0.3))
+                    ctx.setBlendMode(.plusLighter); ctx.setFillColor(marker.copy(alpha: 0.38) ?? marker)
                 }
-                ctx.fill(r)
+                ctx.addPath(CGPath(roundedRect: r, cornerWidth: min(unit * 0.5, r.height / 4), cornerHeight: min(unit * 0.5, r.height / 4), transform: nil))
+                ctx.fillPath()
                 ctx.restoreGState()
             case "text":
-                drawText(a, at: try pt("at"), unit: unit, accent: col)
+                let at = try pt("at")
+                let size = textSize(a, unit)
+                let est = CGRect(x: at.x, y: at.y, width: CGFloat((a["text"] as? String ?? "").count) * size * 0.6, height: size * 1.6)
+                drawText(a, at: at, unit: unit, ink: ink(over: est))
             case "counter":
                 if let n = num(a, "number") { counter = Int(n) } else { counter += 1 }
-                drawCounter(ctx, at: try pt("at"), label: a["label"] as? String ?? "\(counter)",
-                            radius: CGFloat(num(a, "size") ?? Double(unit * 1.9)), color: col)
+                let c = try pt("at"), r = CGFloat(num(a, "size") ?? Double(counterRadius(unit)))
+                drawCounter(ctx, at: c, label: a["label"] as? String ?? "\(counter)", radius: r, style: a["font"] as? String,
+                            ink: ink(over: CGRect(x: c.x - r * 2, y: c.y - r * 2, width: r * 4, height: r * 4)))
             case "pixelate", "blur", "spotlight":
                 break
             default:
@@ -112,48 +138,68 @@ enum Annotator {
         return total / 64
     }
 
+    /// A soft drop shadow that sits below the mark. Shadow offsets ignore the
+    /// flipped CTM, so a negative y lands below in the image.
     private static func withShadow(_ ctx: CGContext, _ w: CGFloat, _ draw: () throws -> Void) rethrows {
         ctx.saveGState()
-        ctx.setShadow(offset: .zero, blur: w * 0.7, color: CGColor(gray: 0, alpha: 0.3))
+        ctx.setShadow(offset: CGSize(width: 0, height: -max(1, w * 0.4)), blur: w * 1.6, color: CGColor(gray: 0, alpha: 0.22))
         try draw()
         ctx.restoreGState()
     }
 
+    static func haloWidth(_ w: CGFloat) -> CGFloat { max(1.5, w * 0.55) }
+
+    /// Strokes `path` in ink over a halo keyline, so the mark holds its edge on busy content.
+    static func stroke(_ ctx: CGContext, _ path: CGPath, width w: CGFloat, ink: Ink) {
+        ctx.setLineCap(.round); ctx.setLineJoin(.round)
+        withShadow(ctx, w) {
+            ctx.setStrokeColor(ink.halo); ctx.setLineWidth(w + haloWidth(w) * 2)
+            ctx.addPath(path); ctx.strokePath()
+        }
+        ctx.setStrokeColor(ink.ink); ctx.setLineWidth(w)
+        ctx.addPath(path); ctx.strokePath()
+    }
+
     /// Tapered arrow: thin at the tail, a solid head at `to`.
-    static func drawArrow(_ ctx: CGContext, from p0: CGPoint, to p1: CGPoint, width w: CGFloat, color: CGColor) {
+    static func drawArrow(_ ctx: CGContext, from p0: CGPoint, to p1: CGPoint, width w: CGFloat, ink: Ink) {
         let dx = p1.x - p0.x, dy = p1.y - p0.y, len = hypot(dx, dy)
         guard len > 1 else { return }
         let u = CGPoint(x: dx / len, y: dy / len), n = CGPoint(x: -u.y, y: u.x)
-        let headLen = min(len * 0.6, w * 4.2), headHalf = w * 2.3
+        let headLen = min(len * 0.6, w * 4.6), headHalf = w * 2.4
         let base = CGPoint(x: p1.x - u.x * headLen, y: p1.y - u.y * headLen)
         func off(_ p: CGPoint, _ d: CGFloat) -> CGPoint { CGPoint(x: p.x + n.x * d, y: p.y + n.y * d) }
         let path = CGMutablePath()
         path.addLines(between: [
-            off(p0, w * 0.2), off(base, w * 0.6), off(base, headHalf), p1,
-            off(base, -headHalf), off(base, -w * 0.6), off(p0, -w * 0.2),
+            off(p0, w * 0.25), off(base, w * 0.6), off(base, headHalf), p1,
+            off(base, -headHalf), off(base, -w * 0.6), off(p0, -w * 0.25),
         ])
         path.closeSubpath()
+        ctx.setLineJoin(.round)
         withShadow(ctx, w) {
-            ctx.setFillColor(color)
-            ctx.setStrokeColor(color); ctx.setLineWidth(w * 0.25); ctx.setLineJoin(.round)
-            ctx.addPath(path); ctx.drawPath(using: .fillStroke)
+            ctx.setStrokeColor(ink.halo); ctx.setLineWidth(haloWidth(w) * 2)
+            ctx.addPath(path); ctx.strokePath()
         }
+        ctx.setFillColor(ink.ink); ctx.setStrokeColor(ink.ink); ctx.setLineWidth(w * 0.25)
+        ctx.addPath(path); ctx.drawPath(using: .fillStroke)
     }
 
-    /// Text box whose top-left is `p`. With `background`, draws a pill in that color (or the accent
-    /// color when `background: true`) and white text; otherwise accent-colored text with a white outline.
-    static func drawText(_ a: Args, at p: CGPoint, unit: CGFloat, accent: CGColor) {
+    static func textSize(_ a: Args, _ unit: CGFloat) -> CGFloat { CGFloat(num(a, "size") ?? Double(unit * 3)) }
+
+    /// Text box whose top-left is `p`. With `background`, a tag in ink (or the
+    /// given color) with text in the opposite tone; otherwise ink text on a halo.
+    static func drawText(_ a: Args, at p: CGPoint, unit: CGFloat, ink: Ink) {
         let text = a["text"] as? String ?? ""
-        let size = CGFloat(num(a, "size") ?? Double(unit * 2.4))
-        let font = NSFont.systemFont(ofSize: size, weight: flag(a, "bold", true) ? .bold : .regular)
+        let size = textSize(a, unit)
+        let font = Fonts.font(a["font"] as? String, size: size, bold: flag(a, "bold", true))
         let bgValue = a["background"]
         let hasBG = bgValue is String || (bgValue as? NSNumber)?.boolValue == true
-        let textColor = hasBG ? color(a["text_color"], "#FFFFFF") : (a["text_color"] != nil ? color(a["text_color"], defaultColor) : accent)
-        var attrs: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: NSColor(cgColor: textColor) ?? .white]
+        let tag = bgValue is String ? color(bgValue, defaultColor) : ink.ink
+        let textColor = a["text_color"] != nil ? color(a["text_color"], "#FFFFFF") : (hasBG ? Ink.opposite(of: tag) : ink.ink)
+        var attrs: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: NSColor(cgColor: textColor) ?? .white, .kern: Fonts.kern(font)]
         let maxW = CGFloat(num(a, "max_width") ?? 100_000)
         let opts: NSString.DrawingOptions = [.usesLineFragmentOrigin, .usesFontLeading]
         let bounds = (text as NSString).boundingRect(with: CGSize(width: maxW, height: 100_000), options: opts, attributes: attrs)
-        let padX = hasBG ? size * 0.45 : 0, padY = hasBG ? size * 0.22 : 0
+        let padX = hasBG ? size * 0.6 : 0, padY = hasBG ? size * 0.3 : 0
         var textRect = CGRect(x: p.x + padX, y: p.y + padY, width: ceil(bounds.width) + 1, height: ceil(bounds.height) + 1)
         guard let ctx = NSGraphicsContext.current?.cgContext else { return }
         // A label placed near an edge slides back inside rather than being cut
@@ -165,32 +211,39 @@ enum Annotator {
         textRect = textRect.offsetBy(dx: max(dx, -outer.minX), dy: max(dy, -outer.minY))
         if hasBG {
             let pill = textRect.insetBy(dx: -padX, dy: -padY)
-            let path = CGPath(roundedRect: pill, cornerWidth: size * 0.35, cornerHeight: size * 0.35, transform: nil)
+            let path = CGPath(roundedRect: pill, cornerWidth: size * 0.32, cornerHeight: size * 0.32, transform: nil)
             withShadow(ctx, unit) {
-                ctx.setFillColor(bgValue is String ? color(bgValue, defaultColor) : accent)
-                ctx.addPath(path); ctx.fillPath()
+                ctx.setStrokeColor(Ink.opposite(of: tag).copy(alpha: 0.9) ?? ink.halo); ctx.setLineWidth(haloWidth(unit) * 2)
+                ctx.addPath(path); ctx.strokePath()
             }
+            ctx.setFillColor(tag); ctx.addPath(path); ctx.fillPath()
         } else {
-            var outline = attrs
-            outline[.strokeColor] = NSColor.white
-            outline[.strokeWidth] = 14
-            (text as NSString).draw(with: textRect, options: opts, attributes: outline)
+            // The halo is a stroke drawn first, so the fill on top keeps every glyph whole.
+            var halo = attrs
+            halo[.foregroundColor] = NSColor.clear
+            halo[.strokeColor] = NSColor(cgColor: ink.halo) ?? .white
+            halo[.strokeWidth] = 22
+            (text as NSString).draw(with: textRect, options: opts, attributes: halo)
         }
         attrs[.foregroundColor] = NSColor(cgColor: textColor) ?? .white
         (text as NSString).draw(with: textRect, options: opts, attributes: attrs)
     }
 
-    static func drawCounter(_ ctx: CGContext, at c: CGPoint, label: String, radius r: CGFloat, color: CGColor) {
+    static func counterRadius(_ unit: CGFloat) -> CGFloat { unit * 2.4 }
+
+    /// An ink disc on a halo ring, its numeral in the opposite tone and
+    /// centered on cap height, not the line box, so it sits optically level.
+    static func drawCounter(_ ctx: CGContext, at c: CGPoint, label: String, radius r: CGFloat, style: String?, ink: Ink) {
         let circle = CGRect(x: c.x - r, y: c.y - r, width: r * 2, height: r * 2)
-        withShadow(ctx, r * 0.4) {
-            ctx.setFillColor(color); ctx.fillEllipse(in: circle)
+        let ring = r * 0.14
+        withShadow(ctx, r * 0.35) {
+            ctx.setFillColor(ink.halo); ctx.fillEllipse(in: circle.insetBy(dx: -ring, dy: -ring))
         }
-        ctx.setStrokeColor(CGColor(gray: 1, alpha: 1)); ctx.setLineWidth(r * 0.12)
-        ctx.strokeEllipse(in: circle.insetBy(dx: r * 0.06, dy: r * 0.06))
-        let font = NSFont.systemFont(ofSize: r * (label.count > 1 ? 0.9 : 1.1), weight: .bold)
-        let attrs: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: NSColor.white]
-        let size = (label as NSString).size(withAttributes: attrs)
-        (label as NSString).draw(at: CGPoint(x: c.x - size.width / 2, y: c.y - size.height / 2), withAttributes: attrs)
+        ctx.setFillColor(ink.ink); ctx.fillEllipse(in: circle)
+        let font = Fonts.font(style, size: r * (label.count > 1 ? 0.9 : 1.1), bold: true)
+        let attrs: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: NSColor(cgColor: Ink.opposite(of: ink.ink)) ?? .white]
+        let w = (label as NSString).size(withAttributes: attrs).width
+        (label as NSString).draw(at: CGPoint(x: c.x - w / 2, y: c.y + font.capHeight / 2 - font.ascender), withAttributes: attrs)
     }
 
     /// Dims everything except the given boxes.
