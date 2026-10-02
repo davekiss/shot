@@ -83,6 +83,29 @@ Every `compose` call reads the image and covers API keys (Anthropic, OpenAI, Git
 
 The agent gets back what was covered and where, as masked previews like `ghp_…(36 chars)`. The secret itself never enters its context.
 
+### It shows you, on your own screen
+
+Ask *"where's the export button?"* and the agent doesn't describe it: it points. `point` draws an arrow, a spotlight or numbered steps right over the live window for a few seconds, then fades them out. Clicks pass through, focus never moves, and nothing is saved.
+
+```json
+{"app": "Figma", "seconds": 5, "annotations": [
+  {"type": "spotlight", "target": "Export"},
+  {"type": "arrow", "target": "Export"},
+  {"type": "text", "target": "Export", "text": "Right here", "background": true}]}
+```
+
+### It checks its own work
+
+After changing a UI, the agent captures again and calls `diff`. It gets back every region that changed, with the text before and after ("Draft" became "Published"), plus an image with each change boxed and numbered. No more squinting at two screenshots to see if the CSS fix did anything.
+
+And it captures at the right moment. `wait_for` re-captures until text appears, text disappears, or the screen settles:
+
+```json
+{"mode": "window", "app": "Chrome", "wait_for": {"text": "Deployed", "timeout": 60}}
+{"mode": "window", "app": "Simulator", "wait_for": {"gone": "Loading"}}
+{"mode": "window", "app": "Safari", "wait_for": {"stable": 1}}
+```
+
 ### It remembers every screenshot
 
 Every screenshot in `~/Screenshots` is indexed with the app and window it came from, its text, and a description. Your agent searches that instead of opening images one by one:
@@ -176,8 +199,10 @@ Crop around the lines you care about, then circle and underline inside them.
 
 | Tool | What it does |
 | --- | --- |
-| `capture` | A screen, a window (by app, title or id; covered and minimized windows work) or a region |
+| `capture` | A screen, a window (by app, title or id; covered and minimized windows work) or a region, optionally waiting for text or a settled screen first |
 | `compose` | Annotations, `target`, `redact_sensitive`, crop, auto-balance, backgrounds |
+| `point` | Draw marks over the live screen for a few seconds, then fade them out |
+| `diff` | What changed between two captures: regions, text before and after, and a marked-up image |
 | `find_sensitive` | Report secrets and personal data in an image, masked, without editing it |
 | `find_shots` | Search the screenshot library by words, app and date |
 | `ocr` | Every line of text with its box in image pixels |
@@ -187,6 +212,10 @@ Crop around the lines you care about, then circle and underline inside them.
 Annotation types: `arrow`, `line`, `rect`, `ellipse`, `text`, `counter`, `highlight`, `spotlight`, `redact`, `pixelate`, `blur`. Coordinates are always pixels of the original image, top-left origin.
 
 Marks draw in ink that adapts to what's underneath (near-black on light screens, near-white on dark ones) and scale with the text they point at. Pass `color` to pick your own.
+
+### Mark styles
+
+Shapes come in two hands. `crisp` (the default) draws clean geometric lines. `sketch` draws like a pen: circles that overshoot where they started, boxes with corners that run long, bowed arrows with a two-stroke head, and highlighter swipes. Set it for a call with `"style": "sketch"`, per mark, or as your default with `SHOT_STYLE`. Either way, a loop or box never touches the text it marks; in tight spots it switches to a finer pen instead.
 
 ### Type styles
 

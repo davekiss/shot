@@ -37,6 +37,10 @@ enum Tools {
         case "capture": return try capture(a)
         case "compose": return try compose(a)
         case "ocr": return try ocr(a)
+        case "diff": return try diff(a)
+        case "point": return try Overlay.point(a)
+        // Internal: the helper process that shows a point overlay, then exits.
+        case "_overlay": Overlay.show(a)
         case "find_sensitive":
             guard let input = a["input"] as? String else { throw ShotError("find_sensitive needs input (an image path)") }
             let findings = Sensitive.scan(try loadImage(input), kinds: Sensitive.kinds(text: true, faces: flag(a, "faces")))
@@ -75,14 +79,47 @@ enum Tools {
             throw ShotError("mode must be screen, window or region")
         }
         if flag(a, "cursor") { args.append("-C") }
-        args.append(out)
-        let (status, output) = try run("/usr/sbin/screencapture", args)
-        guard status == 0, FileManager.default.fileExists(atPath: out) else {
-            throw ShotError("screencapture failed (\(status)): \(output.trimmingCharacters(in: .whitespacesAndNewlines))")
+        func snap(_ path: String) throws {
+            let (status, output) = try run("/usr/sbin/screencapture", args + [path])
+            guard status == 0, FileManager.default.fileExists(atPath: path) else {
+                throw ShotError("screencapture failed (\(status)): \(output.trimmingCharacters(in: .whitespacesAndNewlines))")
+            }
         }
-        if let window { Library.writePNGMetadata(out, app: window.app, window: window.label, description: nil) }
+        if let cond = try Wait.condition(a["wait_for"]) {
+            // Re-capture until the condition holds or time runs out, and keep
+            // the last frame either way: a timeout still shows what was there.
+            let spec = a["wait_for"] as? Args ?? [:]
+            let timeout = min(num(spec, "timeout") ?? 20, 120)
+            let start = Date(), tmp = out + ".waiting.png"
+            var last: CGImage?, steadySince: Date?, met = false
+            repeat {
+                try snap(tmp)
+                let img = try loadImage(tmp)
+                if case .stable(let seconds) = cond {
+                    let same = last.map { (try? Diff.regions($0, img))?.isEmpty ?? false } ?? false
+                    steadySince = same ? (steadySince ?? Date()) : nil
+                    met = steadySince.map { Date().timeIntervalSince($0) >= seconds } ?? false
+                    last = img
+                } else {
+                    met = Wait.met(cond, img)
+                }
+                if met { break }
+                Thread.sleep(forTimeInterval: 0.4)
+            } while Date().timeIntervalSince(start) < timeout
+            try? FileManager.default.removeItem(atPath: out)
+            try FileManager.default.moveItem(atPath: tmp, toPath: out)
+            info["waited_seconds"] = (Date().timeIntervalSince(start) * 10).rounded() / 10
+            info["wait_met"] = met
+            if !met { info["wait_note"] = "Timed out after \(Int(timeout))s; this is the last frame." }
+        } else {
+            try snap(out)
+        }
         let img = try loadImage(out)
-        Library.add(try Library.record(path: out, img: img, window: window))
+        // Scratch captures (point's look at the screen) stay out of the library.
+        if !flag(a, "_scratch") {
+            if let window { Library.writePNGMetadata(out, app: window.app, window: window.label, description: nil) }
+            Library.add(try Library.record(path: out, img: img, window: window))
+        }
         info["path"] = out
         info["width"] = img.width
         info["height"] = img.height
@@ -102,14 +139,17 @@ enum Tools {
         var info: Args = ["input_size": [img.width, img.height]]
         var anns = a["annotations"] as? [Args] ?? []
         // A font for the whole call applies to every mark that doesn't name its own.
-        if let f = a["font"] as? String { anns = anns.map { var m = $0; if m["font"] == nil { m["font"] = f }; return m } }
+        // A font or mark style for the whole call applies to every mark that doesn't name its own.
+        for key in ["font", "style"] {
+            if let v = a[key] as? String { anns = anns.map { var m = $0; if m[key] == nil { m[key] = v }; return m } }
+        }
 
         // Targets and sensitive data are found on the original input, so their
         // boxes are in the same pixels as every other annotation coordinate.
         if Targets.needed(a) {
             let ocr = OCRText(img)
             // Text sets the scale: an arrow should be as bold as the words it points at.
-            if let th = ocr.textHeight { markUnit = max(2, th / 3.4) }
+            markUnit = Annotator.markUnit(img, textHeight: ocr.textHeight)
             let unit = markUnit
             var found: [Args] = []
             // The crop is worked out first so marks are placed inside what will be kept.
@@ -177,6 +217,41 @@ enum Tools {
         return ToolResult(info: info, image: flag(a, "preview", true) ? img : nil)
     }
 
+    // MARK: diff
+
+    static func diff(_ a: Args) throws -> ToolResult {
+        guard let beforePath = a["before"] as? String, let afterPath = a["after"] as? String else {
+            throw ShotError("diff needs before and after (image paths)")
+        }
+        let before = try loadImage(beforePath), after = try loadImage(afterPath)
+        let rects = try Diff.regions(before, after, minArea: num(a, "min_area").map { CGFloat($0) })
+        guard !rects.isEmpty else { return ToolResult(info: ["changed": 0, "note": "No visible changes."]) }
+        let regions = Diff.describe(rects, before, after)
+        let unit = Annotator.markUnit(after, textHeight: OCRText(after).textHeight)
+        // Each change gets a box and a number matching the list returned.
+        let anns: [Args] = rects.enumerated().flatMap { i, r -> [Args] in
+            let box = r.insetBy(dx: -unit, dy: -unit)
+            // The badge sits off the box's corner, so it never covers the change it labels.
+            let off = Annotator.counterRadius(unit) * 0.75
+            return [["type": "rect", "x": box.minX, "y": box.minY, "width": box.width, "height": box.height],
+                    ["type": "counter", "at": [max(off, box.minX - off), max(off, box.minY - off)], "number": i + 1]]
+        }
+        let marked = try Annotator.apply(anns, to: after, offset: .zero, unit: unit)
+        let out = (a["output"] as? String).map(expand) ?? editedPath(for: afterPath).replacingOccurrences(of: " edited.png", with: " diff.png")
+        try writePNG(marked, to: out)
+        let parent = Library.lookup(expand(afterPath)) ?? ["path": expand(afterPath)]
+        Library.add(try Library.record(path: out, img: marked, from: parent))
+        let area = rects.reduce(0) { $0 + $1.width * $1.height } / CGFloat(after.width * after.height)
+        let list: [Args] = regions.enumerated().map { i, g in
+            var r: Args = ["n": i + 1, "box": [Int(g.rect.minX), Int(g.rect.minY), Int(g.rect.width), Int(g.rect.height)]]
+            if g.before != g.after { r["text_before"] = g.before; r["text_after"] = g.after }
+            return r
+        }
+        return ToolResult(info: ["changed": regions.count, "regions": list, "changed_area": NSDecimalNumber(string: String(format: "%.3f", area)),
+                                 "path": out, "width": marked.width, "height": marked.height],
+                          image: flag(a, "preview", true) ? marked : nil)
+    }
+
     // MARK: ocr
 
     static func ocr(_ a: Args) throws -> ToolResult {
@@ -219,6 +294,40 @@ enum Tools {
                     "cursor": ["type": "boolean"],
                     "output": ["type": "string", "description": "Output PNG path."],
                     "preview": ["type": "boolean", "description": "Return a preview image. Default true."],
+                    "wait_for": ["type": "object", "description": "Re-capture until a condition holds, then keep that frame: {text: 'Deployed'} waits for text to appear, {gone: 'Loading'} for it to disappear, {stable: 1} for 1s of no visible change (pages that finished loading). timeout: seconds, default 20, max 120. The result says whether it was met; on timeout you get the last frame.",
+                                 "properties": ["text": ["type": "string"], "gone": ["type": "string"], "stable": ["type": "number"], "timeout": ["type": "number"]]],
+                ],
+            ],
+        ],
+        [
+            "name": "point",
+            "description": "Show marks on the user's live screen for a few seconds: an arrow, box, numbered steps, a label or a spotlight drawn right over a window, then faded away. Nothing is saved, focus never moves, and clicks pass through. Use it to show the user where something is ('where's the export button?') instead of describing it. Annotations take target text like compose. Returns at once; the marks stay up for `seconds`.",
+            "inputSchema": [
+                "type": "object",
+                "required": ["annotations"],
+                "properties": [
+                    "app": ["type": "string", "description": "Window to point at: app name substring. Omit app/title/window_id to point at the main screen."],
+                    "title": ["type": "string", "description": "Window title substring."],
+                    "window_id": ["type": "number", "description": "Exact id from list_windows."],
+                    "annotations": ["type": "array", "description": "Same as compose: arrow, rect, ellipse, line, text, counter, highlight, spotlight, each usually with target: 'text on screen'.", "items": ["type": "object"]],
+                    "seconds": ["type": "number", "description": "How long the marks stay up. Default 4, max 15."],
+                    "font": ["type": "string", "description": "Type style for labels and counters, as in compose."],
+                    "style": ["type": "string", "enum": ["crisp", "sketch"], "description": "Mark style, as in compose."],
+                ],
+            ],
+        ],
+        [
+            "name": "diff",
+            "description": "Compare two screenshots of the same size (e.g. before and after a change) and find what changed. Returns each changed region's box plus the text inside it before and after, and saves the after image with each change boxed and numbered. Use it to check that an edit did something, or to show what changed.",
+            "inputSchema": [
+                "type": "object",
+                "required": ["before", "after"],
+                "properties": [
+                    "before": ["type": "string", "description": "Path to the earlier screenshot."],
+                    "after": ["type": "string", "description": "Path to the later screenshot."],
+                    "output": ["type": "string", "description": "Output PNG path. Default: '<after> diff.png'."],
+                    "min_area": ["type": "number", "description": "Ignore changes smaller than this many square pixels (blinking carets, clocks). Default scales with the image."],
+                    "preview": ["type": "boolean", "description": "Return a preview image. Default true."],
                 ],
             ],
         ],
@@ -237,6 +346,7 @@ enum Tools {
                     "crop": ["type": "object", "description": "x, y, width, height in input pixels, or {target: 'text' or ['text', 'more text'], pad?} to crop around the lines that text is on.",
                              "properties": ["x": ["type": "number"], "y": ["type": "number"], "width": ["type": "number"], "height": ["type": "number"],
                                             "target": ["description": "Text, or a list of texts, to crop around."], "nth": ["type": "number"], "pad": ["type": "number"]]],
+                    "style": ["type": "string", "enum": ["crisp", "sketch"], "description": "Mark style for every shape: crisp (default, clean geometric lines) or sketch (hand-drawn: wobbly boxes, overshooting circles, bowed arrows, highlighter swipes). Any annotation can set its own. SHOT_STYLE sets the default."],
                     "font": ["type": "string", "description": "Type style for every label and counter: pixel (default, shot's own), clean, rounded, serif, mono, or an installed font name. Any annotation can set its own font too. SHOT_FONT sets the default."],
                     "redact_sensitive": ["type": "boolean", "description": "On by default: finds and covers sensitive text before anything else is drawn (API keys, tokens, passwords, JWTs, private keys, emails, card numbers, phone numbers). The result lists what was covered with masked previews, never the values. Pass false only when the user wants that text visible."],
                     "redact_faces": ["type": "boolean", "description": "Also pixelate faces (off by default: avatars are often what a screenshot is showing)."],
@@ -267,7 +377,7 @@ enum Tools {
                                 "x": ["type": "number"], "y": ["type": "number"], "width": ["type": "number"], "height": ["type": "number"],
                                 "text": ["type": "string"], "size": ["type": "number"], "color": ["type": "string"],
                                 "background": ["description": "text: true for a tag in the mark's ink, or a color string"],
-                                "text_color": ["type": "string"], "font": ["type": "string"], "bold": ["type": "boolean"], "max_width": ["type": "number"],
+                                "text_color": ["type": "string"], "font": ["type": "string"], "style": ["type": "string"], "bold": ["type": "boolean"], "max_width": ["type": "number"],
                                 "number": ["type": "number"], "label": ["type": "string"], "fill": ["description": "true or a color"],
                                 "amount": ["type": "number"], "shape": ["type": "string"], "opacity": ["type": "number"], "stroke": ["type": "number"],
                             ],

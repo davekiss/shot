@@ -150,11 +150,26 @@ enum Targets {
             let r = hit.rect.insetBy(dx: -padX, dy: -padY)
             switch type {
             case "ellipse", "circle":
-                // An ellipse inscribed in the text's box clips its corners;
-                // widening it by about a fifth clears them.
-                let e = r.insetBy(dx: -min(r.width * 0.12, room.left * 0.5, room.right * 0.5), dy: 0)
-                if a["x"] == nil { a["x"] = e.minX; a["y"] = e.minY; a["width"] = e.width; a["height"] = e.height }
-            case "rect", "rectangle", "highlight", "redact", "pixelate", "blur", "spotlight":
+                if a["x"] == nil {
+                    // Between tight lines a full-weight pen can't fit; a finer one
+                    // keeps the loop off both the word and its neighbors.
+                    let pen = CGFloat(num(a, "stroke") ?? Double(Shapes.pen(for: min(room.above, room.below) * 0.5, unit: unit)))
+                    if a["stroke"] == nil, pen < unit * 0.84 { a["stroke"] = pen }
+                    let fit = Shapes.enclose(hit.rect, stroke: pen, room: room, unit: unit)
+                    a["x"] = fit.box.minX; a["y"] = fit.box.minY; a["width"] = fit.box.width; a["height"] = fit.box.height
+                    if fit.exponent != 2 { a["_exponent"] = fit.exponent }
+                }
+            case "rect", "rectangle":
+                // Like loops: a finer pen when space is tight, and padding never
+                // less than the stroke's inward reach, so the box never touches the text.
+                if a["x"] == nil {
+                    let pen = CGFloat(num(a, "stroke") ?? Double(Shapes.pen(for: min(room.above, room.below) * 0.5, unit: unit)))
+                    if a["stroke"] == nil, pen < unit * 0.84 { a["stroke"] = pen }
+                    let clear = Shapes.clearance(pen, unit)
+                    let b = hit.rect.insetBy(dx: -max(padX, clear), dy: -max(padY, clear))
+                    a["x"] = b.minX; a["y"] = b.minY; a["width"] = b.width; a["height"] = b.height
+                }
+            case "highlight", "redact", "pixelate", "blur", "spotlight":
                 if a["x"] == nil { a["x"] = r.minX; a["y"] = r.minY; a["width"] = r.width; a["height"] = r.height }
             case "counter":
                 // Beside the text like a step marker; else above, right, below,
@@ -213,7 +228,7 @@ enum Targets {
             let same = { (b: Args) in b["target"] as? String == out[i]["target"] as? String && num(b, "nth") == num(out[i], "nth") }
             guard let arrow = out.first(where: { $0["type"] as? String == "arrow" && same($0) }),
                   let from = point(arrow["from"]), let to = point(arrow["to"]) else { continue }
-            out[i]["at"] = callout(out[i], tail: from, head: to, unit: unit)
+            out[i]["at"] = callout(out[i], tail: from, head: to, unit: unit, within: bounds)
         }
         return out
     }
@@ -272,13 +287,17 @@ enum Targets {
     }
 
     /// Top-left for a text label so its edge meets an arrow's tail on the far side from the head.
-    static func callout(_ a: Args, tail: CGPoint, head: CGPoint, unit: CGFloat) -> [CGFloat] {
+    static func callout(_ a: Args, tail: CGPoint, head: CGPoint, unit: CGFloat, within bounds: CGRect? = nil) -> [CGFloat] {
         let (w, h) = labelSize(a, unit)
         let dx = tail.x - head.x, dy = tail.y - head.y, gap = unit * 0.4
-        if abs(dx) >= abs(dy) * 0.5 {
-            return [dx < 0 ? tail.x - gap - w : tail.x + gap, tail.y - h / 2]
+        var p = abs(dx) >= abs(dy) * 0.5
+            ? CGPoint(x: dx < 0 ? tail.x - gap - w : tail.x + gap, y: tail.y - h / 2)
+            : CGPoint(x: tail.x - w / 2, y: dy > 0 ? tail.y + gap : tail.y - gap - h)
+        if let b = bounds {
+            p.x = min(max(p.x, b.minX), max(b.minX, b.maxX - w))
+            p.y = min(max(p.y, b.minY), max(b.minY, b.maxY - h))
         }
-        return [tail.x - w / 2, dy > 0 ? tail.y + gap : tail.y - gap - h]
+        return [p.x, p.y]
     }
 
     /// Every other line of text, plus the rest of the target's own line on
@@ -301,11 +320,11 @@ enum Targets {
         // Longer arrows reach open space on crowded screens; a crossing costs
         // far more than extra length, so short wins whenever it's clean.
         var best: (score: Double, from: CGPoint, to: CGPoint)?
-        for d in dirs { for stretch in [1.0, 1.6, 2.4, 3.4] as [CGFloat] {
+        for d in dirs { for stretch in [0.6, 1.0, 1.6, 2.4, 3.4] as [CGFloat] {
             let t = min(r.width / 2 / max(abs(d.x), 0.001), r.height / 2 / max(abs(d.y), 0.001))
             let to = CGPoint(x: c.x + d.x * t, y: c.y + d.y * t)
             let from = CGPoint(x: to.x + d.x * length * stretch, y: to.y + d.y * length * stretch)
-            var score: Double = (bounds.insetBy(dx: 4, dy: 4).contains(from) ? 0 : 100) + Double(stretch - 1) * 0.8
+            var score: Double = (bounds.insetBy(dx: 4, dy: 4).contains(from) ? 0 : 100) + Double(abs(stretch - 1)) * 0.8
             // Sample along the shaft; each text line it passes over costs one.
             var crossed = Set<Int>()
             for k in 1...12 {
@@ -315,9 +334,10 @@ enum Targets {
             }
             score += Double(crossed.count) * 3
             if let label {
-                let at = callout(label, tail: from, head: to, unit: unit), (w, h) = labelSize(label, unit)
+                // Judge the label where it will be drawn: slid back inside the image if it pokes out.
+                let at = callout(label, tail: from, head: to, unit: unit, within: bounds), (w, h) = labelSize(label, unit)
                 let box = CGRect(x: at[0], y: at[1], width: w, height: h)
-                score += (bounds.contains(box) ? 0 : 50) + Double(others.filter { $0.intersects(box) }.count) * 4
+                score += (w > bounds.width || h > bounds.height ? 50 : 0) + Double(others.filter { $0.intersects(box) }.count) * 4
             }
             if best == nil || score < best!.score { best = (score, from, to) }
         } }
@@ -459,5 +479,62 @@ enum Sensitive {
 
     static func kinds(text: Bool, faces: Bool) -> [String] {
         (text ? textKinds : []) + (faces ? ["face"] : [])
+    }
+}
+
+/// Loops around text that never cut into it.
+enum Shapes {
+    /// A pen fine enough that its stroke and halo fit in `half` the gap to
+    /// the nearest neighbor, never finer than a third of the usual weight.
+    static func pen(for half: CGFloat, unit: CGFloat) -> CGFloat {
+        var pen = unit * 0.85
+        while pen > unit * 0.35, clearance(pen, unit) > half * 0.9 { pen *= 0.85 }
+        return pen
+    }
+
+    /// How far a stroke of width `w` reaches inward from its path, halo included.
+    static func clearance(_ w: CGFloat, _ unit: CGFloat) -> CGFloat { w * 0.5 + Annotator.haloWidth(w) + unit * 0.35 }
+
+    /// The loop (an ellipse, or a squarer superellipse when space is tight)
+    /// whose inner edge clears every corner of `text`. It grows taller only as
+    /// far as the neighboring lines allow, then wider, then squarer.
+    static func enclose(_ text: CGRect, stroke w: CGFloat, room: (left: CGFloat, right: CGFloat, above: CGFloat, below: CGFloat),
+                        unit: CGFloat) -> (box: CGRect, exponent: CGFloat) {
+        // The stroke and its halo straddle the path; their inner half must clear the text too.
+        let clear = w * 0.5 + Annotator.haloWidth(w) + unit * 0.35
+        let hw = text.width / 2 + clear, hh = text.height / 2 + clear
+        let bMax = hh + max(0, min(room.above, room.below) - clear) * 0.5
+        let aMax = hw + max(0, min(room.left, room.right) - clear) * 0.7
+        let b = min(hh * 1.4, max(hh * 1.04, bMax))
+        // Smallest a, for exponent n, that puts the corner (hw, hh) inside.
+        func need(_ n: CGFloat) -> CGFloat {
+            let rest = 1 - pow(hh / b, n)
+            return rest > 0.0001 ? hw / pow(rest, 1 / n) : .infinity
+        }
+        var n: CGFloat = 2
+        while need(n) > max(aMax, hw * 1.04), n < 8 { n += 0.25 }
+        let a = max(min(need(n), max(aMax, hw * 1.04)), hw * 1.04)
+        // Past what the room allows, keep the loop off the text even if it brushes a neighbor.
+        let aFit = need(n).isFinite ? max(a, need(n)) : a
+        return (CGRect(x: text.midX - aFit, y: text.midY - b, width: aFit * 2, height: b * 2), n)
+    }
+
+    /// Point on a superellipse with semi-axes a, b and exponent n at angle t.
+    static func point(_ c: CGPoint, a: CGFloat, b: CGFloat, n: CGFloat, t: CGFloat, scale k: CGFloat = 1) -> CGPoint {
+        let ct = cos(t), st = sin(t)
+        let x = (ct < 0 ? -1 : 1) * pow(abs(ct), 2 / n) * a * k
+        let y = (st < 0 ? -1 : 1) * pow(abs(st), 2 / n) * b * k
+        return CGPoint(x: c.x + x, y: c.y + y)
+    }
+
+    static func loop(_ r: CGRect, exponent n: CGFloat) -> CGPath {
+        if n == 2 { return CGPath(ellipseIn: r, transform: nil) }
+        let path = CGMutablePath()
+        for i in 0...144 {
+            let p = point(CGPoint(x: r.midX, y: r.midY), a: r.width / 2, b: r.height / 2, n: n, t: CGFloat(i) / 144 * .pi * 2)
+            i == 0 ? path.move(to: p) : path.addLine(to: p)
+        }
+        path.closeSubpath()
+        return path
     }
 }

@@ -158,6 +158,48 @@ final class TargetTests: XCTestCase {
         XCTAssertTrue(visible.contains(CGRect(x: at.x, y: at.y, width: w, height: h)), "label falls outside the crop")
     }
 
+    func testLoopsNeverCutIntoTheTextTheyCircle() throws {
+        // Tight terminal lines leave little room above and below.
+        let img = render(["ANTHROPIC_API_KEY=sk-ant", "GITHUB_TOKEN=ghp_8fKz", "PORT=3000", "LOG_LEVEL=debug"], size: 32, width: 1200)
+        let ocr = OCRText(img)
+        for word in ["GITHUB_TOKEN", "PORT"] {
+            var found: [Args] = []
+            let out = try Targets.resolve([["type": "ellipse", "target": word]], ocr: ocr, unit: 9, found: &found)
+            let loop = try XCTUnwrap(box(out[0])), n = CGFloat(num(out[0], "_exponent") ?? 2)
+            let w: CGFloat = 9 * 0.85
+            let text = try XCTUnwrap(ocr.find(word).first).rect.insetBy(dx: -(w * 0.5 + Annotator.haloWidth(w)), dy: -(w * 0.5 + Annotator.haloWidth(w)))
+            let a = loop.width / 2, b = loop.height / 2
+            for corner in [CGPoint(x: text.minX, y: text.minY), CGPoint(x: text.maxX, y: text.maxY)] {
+                let inside = pow(abs(corner.x - loop.midX) / a, n) + pow(abs(corner.y - loop.midY) / b, n)
+                XCTAssertLessThanOrEqual(inside, 1.0001, "\(word): the loop cuts the text's corner (\(inside))")
+            }
+        }
+    }
+
+    func testBoxesClearTheirTextOnTightLines() throws {
+        let img = render(["GITHUB_TOKEN=ghp_8fKz", "STRIPE_SECRET=sk_live", "DATABASE_URL=postgres"], size: 32, width: 1200)
+        let ocr = OCRText(img)
+        var found: [Args] = []
+        let out = try Targets.resolve([["type": "ellipse", "target": "GITHUB_TOKEN"], ["type": "rect", "target": "STRIPE_SECRET"]],
+                                      ocr: ocr, unit: 9, found: &found)
+        let rect = try XCTUnwrap(box(out[1])), pen = CGFloat(num(out[1], "stroke") ?? 9 * 0.85)
+        let text = try XCTUnwrap(ocr.find("STRIPE_SECRET").first).rect
+        let inner = rect.insetBy(dx: pen * 0.5 + Annotator.haloWidth(pen), dy: pen * 0.5 + Annotator.haloWidth(pen))
+        XCTAssertTrue(inner.contains(text), "the box's stroke reaches into its text: inner \(inner), text \(text)")
+    }
+
+    func testSketchLoopsOnlyDriftOutward() {
+        let r = CGRect(x: 100, y: 100, width: 300, height: 80)
+        let path = Sketch.ellipse(r, width: 6)
+        var minScale = CGFloat.infinity
+        path.applyWithBlock { el in
+            let p = el.pointee.points[0]
+            let v = pow((p.x - r.midX) / (r.width / 2), 2) + pow((p.y - r.midY) / (r.height / 2), 2)
+            minScale = min(minScale, v)
+        }
+        XCTAssertGreaterThanOrEqual(minScale, 0.999, "the sketch loop dips inside its ellipse")
+    }
+
     func testMissingTextListsWhatIsThere() {
         let img = render(["Save", "Cancel"], size: 40, width: 800, mono: false)
         var found: [Args] = []
@@ -290,8 +332,51 @@ final class ComposeTests: XCTestCase {
         XCTAssertNil(result.info["redacted"])
     }
 
+    func testDiffFindsTheChangedWordAndItsText() throws {
+        let before = dir.appendingPathComponent("before.png").path, after = dir.appendingPathComponent("after.png").path
+        try writePNG(render(["Status: Draft", "Owner: Dave", "Region: us-east"], size: 36, width: 1000, mono: false), to: before)
+        try writePNG(render(["Status: Published", "Owner: Dave", "Region: us-east"], size: 36, width: 1000, mono: false), to: after)
+        let result = try Tools.diff(["before": before, "after": after, "preview": false])
+        XCTAssertEqual(result.info["changed"] as? Int, 1)
+        let region = try XCTUnwrap((result.info["regions"] as? [Args])?.first)
+        XCTAssertTrue((region["text_before"] as? String ?? "").contains("Draft"), "\(region)")
+        XCTAssertTrue((region["text_after"] as? String ?? "").contains("Published"), "\(region)")
+    }
+
+    func testDiffOfIdenticalImagesFindsNothing() throws {
+        let p = try input()
+        XCTAssertEqual(try Tools.diff(["before": p, "after": p, "preview": false]).info["changed"] as? Int, 0)
+    }
+
+    func testDiffRefusesDifferentSizes() throws {
+        let small = dir.appendingPathComponent("small.png").path
+        try writePNG(render(["x"], width: 400), to: small)
+        XCTAssertThrowsError(try Tools.diff(["before": small, "after": try input(), "preview": false]))
+    }
+
+    func testWaitConditionsReadTheScreen() throws {
+        let img = render(["Deploying…", "Build 42"], size: 36, width: 900, mono: false)
+        XCTAssertTrue(Wait.met(.text("Build 42"), img))
+        XCTAssertFalse(Wait.met(.text("Deployed"), img))
+        XCTAssertTrue(Wait.met(.gone("Error"), img))
+        XCTAssertFalse(Wait.met(.gone("Deploying"), img))
+    }
+
     func testTheLibraryOverrideKeepsTheRealIndexUntouched() throws {
         _ = try Tools.compose(["input": try input(), "output": dir.appendingPathComponent("out.png").path, "preview": false])
         XCTAssertTrue(FileManager.default.fileExists(atPath: dir.appendingPathComponent(".shot-index.json").path))
+    }
+}
+
+final class ScaleTests: XCTestCase {
+    func testOneGiantLineDoesNotBlowUpTheMarks() {
+        let img = render(["Deployed"], size: 120, width: 1000, mono: false, height: 480)
+        let unit = Annotator.markUnit(img, textHeight: OCRText(img).textHeight)
+        let base = CGFloat(sqrt(1000.0 * 480) / 200)
+        XCTAssertLessThanOrEqual(unit, base * 2.2 + 0.01)
+    }
+
+    func testOrdinaryTextSetsTheScale() {
+        XCTAssertEqual(Annotator.markUnit(render(["x"], width: 2880, height: 1800), textHeight: 40), 40 / 3.4, accuracy: 0.01)
     }
 }

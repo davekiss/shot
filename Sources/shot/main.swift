@@ -6,7 +6,7 @@ import Foundation
 let cliArgs = Array(CommandLine.arguments.dropFirst())
 if let tool = cliArgs.first {
     if tool == "--help" || tool == "-h" {
-        print("usage: shot [capture|compose|ocr|list_windows|find_shots|annotate|describe] '<json args>'\n(no arguments: run as an MCP server over stdio)")
+        print("usage: shot [capture|compose|diff|point|ocr|find_sensitive|list_windows|find_shots|annotate|describe] '<json args>'\n(no arguments: run as an MCP server over stdio)")
         exit(0)
     }
     do {

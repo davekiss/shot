@@ -29,14 +29,17 @@ struct Ink {
 /// Draws annotations onto an image. Coordinates are pixels of the original input, top-left origin;
 /// `offset` is where the current image starts within that input (after crop/balance).
 enum Annotator {
-    static func apply(_ anns: [Args], to base: CGImage, offset: CGPoint, unit: CGFloat) throws -> CGImage {
+    /// With `overlay`, marks are drawn on a transparent canvas the size of
+    /// `base` (for showing over the live screen); `base` is still what the
+    /// ink samples, so it contrasts with what's actually under each mark.
+    static func apply(_ anns: [Args], to base: CGImage, offset: CGPoint, unit: CGFloat, overlay: Bool = false) throws -> CGImage {
         var img = base
         let redactions = anns.filter { ["pixelate", "blur"].contains($0["type"] as? String ?? "") }
         if !redactions.isEmpty { img = try redact(img, redactions, offset, unit) }
 
         let W = img.width, H = img.height
         guard let ctx = makeContext(W, H, space: rgbSpace(img)) else { throw ShotError("Couldn't create a drawing context") }
-        ctx.draw(img, in: CGRect(x: 0, y: 0, width: W, height: H))
+        if !overlay { ctx.draw(img, in: CGRect(x: 0, y: 0, width: W, height: H)) }
         // Flip so annotation coordinates match image pixels with a top-left origin.
         ctx.translateBy(x: 0, y: CGFloat(H))
         ctx.scaleBy(x: 1, y: -1)
@@ -65,27 +68,39 @@ enum Annotator {
             // Ink is chosen from what sits under the mark (sampled before
             // anything is drawn), so it reads on light and dark screens alike.
             func ink(over region: CGRect) -> Ink { Ink.resolve(a["color"], over: region.intersection(bounds), in: img) }
+            let sketch = (a["style"] as? String ?? markStyle).lowercased() == "sketch"
             switch type {
             case "arrow":
                 let p0 = try pt("from"), p1 = try pt("to")
                 let region = CGRect(x: min(p0.x, p1.x), y: min(p0.y, p1.y), width: abs(p1.x - p0.x), height: abs(p1.y - p0.y)).insetBy(dx: -w * 3, dy: -w * 3)
-                drawArrow(ctx, from: p0, to: p1, width: w, ink: ink(over: region))
+                if sketch { stroke(ctx, Sketch.arrow(from: p0, to: p1, width: w), width: w * 0.8, ink: ink(over: region), halo: 0.55) }
+                else { drawArrow(ctx, from: p0, to: p1, width: w, ink: ink(over: region)) }
             case "line":
                 let p0 = try pt("from"), p1 = try pt("to")
-                let path = CGMutablePath(); path.move(to: p0); path.addLine(to: p1)
+                var rng = Sketch.Wobble(p0.x, p0.y, p1.x, p1.y)
+                let path: CGPath = sketch ? Sketch.line(p0, p1, width: w, &rng).path
+                    : { let p = CGMutablePath(); p.move(to: p0); p.addLine(to: p1); return p }()
                 let region = CGRect(x: min(p0.x, p1.x), y: min(p0.y, p1.y), width: abs(p1.x - p0.x), height: abs(p1.y - p0.y)).insetBy(dx: -w * 3, dy: -w * 3)
-                stroke(ctx, path, width: w, ink: ink(over: region))
+                stroke(ctx, path, width: sketch ? w * 0.8 : w, ink: ink(over: region), halo: sketch ? 0.55 : 1)
             case "rect", "rectangle", "ellipse", "circle":
                 let r = try rect()
                 let path = type.hasPrefix("rect")
                     ? CGPath(roundedRect: r, cornerWidth: min(w * 1.5, r.width / 2), cornerHeight: min(w * 1.5, r.height / 2), transform: nil)
-                    : CGPath(ellipseIn: r, transform: nil)
+                    : Shapes.loop(r, exponent: CGFloat(num(a, "_exponent") ?? 2))
                 let k = ink(over: r.insetBy(dx: -w * 2, dy: -w * 2))
                 if a["fill"] != nil {
                     ctx.setFillColor(a["fill"] is String ? color(a["fill"], defaultColor) : k.ink.copy(alpha: 0.18) ?? k.ink)
                     ctx.addPath(path); ctx.fillPath()
                 }
-                stroke(ctx, path, width: w, ink: k)
+                if sketch && type.hasPrefix("rect") {
+                    // A firm pass and a lighter second one, like a quick double stroke.
+                    stroke(ctx, Sketch.rect(r, width: w, pass: 0), width: w * 0.8, ink: k, halo: 0.55)
+                    stroke(ctx, Sketch.rect(r, width: w, pass: 1), width: w * 0.45, ink: k, halo: 0.4)
+                } else if sketch {
+                    stroke(ctx, Sketch.ellipse(r, width: w, exponent: CGFloat(num(a, "_exponent") ?? 2)), width: w * 0.8, ink: k, halo: 0.55)
+                } else {
+                    stroke(ctx, path, width: w, ink: k)
+                }
             case "redact":
                 ctx.setFillColor(color(a["color"], "#000000")); ctx.fill(try rect())
             case "highlight":
@@ -94,13 +109,22 @@ enum Annotator {
                 let r = try rect()
                 let marker = color(a["color"], "#FFE14D")
                 ctx.saveGState()
-                if luminance(img, r) > 0.45 {
-                    ctx.setBlendMode(.multiply); ctx.setFillColor(marker)
+                if overlay {
+                    // Nothing to multiply with on a transparent canvas: a translucent marker wash.
+                    ctx.setFillColor(marker.copy(alpha: 0.4) ?? marker); ctx.setStrokeColor(marker.copy(alpha: 0.4) ?? marker)
+                } else if luminance(img, r) > 0.45 {
+                    ctx.setBlendMode(.multiply); ctx.setFillColor(marker); ctx.setStrokeColor(marker)
                 } else {
-                    ctx.setBlendMode(.plusLighter); ctx.setFillColor(marker.copy(alpha: 0.38) ?? marker)
+                    ctx.setBlendMode(.plusLighter); ctx.setFillColor(marker.copy(alpha: 0.38) ?? marker); ctx.setStrokeColor(marker.copy(alpha: 0.38) ?? marker)
                 }
-                ctx.addPath(CGPath(roundedRect: r, cornerWidth: min(unit * 0.5, r.height / 4), cornerHeight: min(unit * 0.5, r.height / 4), transform: nil))
-                ctx.fillPath()
+                if sketch {
+                    // A highlighter swipe rather than a filled box.
+                    ctx.setLineWidth(r.height * 0.92); ctx.setLineCap(.round)
+                    ctx.addPath(Sketch.highlight(r)); ctx.strokePath()
+                } else {
+                    ctx.addPath(CGPath(roundedRect: r, cornerWidth: min(unit * 0.5, r.height / 4), cornerHeight: min(unit * 0.5, r.height / 4), transform: nil))
+                    ctx.fillPath()
+                }
                 ctx.restoreGState()
             case "text":
                 let at = try pt("at")
@@ -149,11 +173,12 @@ enum Annotator {
 
     static func haloWidth(_ w: CGFloat) -> CGFloat { max(1.5, w * 0.55) }
 
-    /// Strokes `path` in ink over a halo keyline, so the mark holds its edge on busy content.
-    static func stroke(_ ctx: CGContext, _ path: CGPath, width w: CGFloat, ink: Ink) {
+    /// Strokes `path` in ink over a halo keyline, so the mark holds its edge on
+    /// busy content. A lighter halo suits pen-like sketch strokes.
+    static func stroke(_ ctx: CGContext, _ path: CGPath, width w: CGFloat, ink: Ink, halo: CGFloat = 1) {
         ctx.setLineCap(.round); ctx.setLineJoin(.round)
         withShadow(ctx, w) {
-            ctx.setStrokeColor(ink.halo); ctx.setLineWidth(w + haloWidth(w) * 2)
+            ctx.setStrokeColor(ink.halo); ctx.setLineWidth(w + haloWidth(w) * 2 * halo)
             ctx.addPath(path); ctx.strokePath()
         }
         ctx.setStrokeColor(ink.ink); ctx.setLineWidth(w)
@@ -230,6 +255,21 @@ enum Annotator {
     }
 
     static func counterRadius(_ unit: CGFloat) -> CGFloat { unit * 2.4 }
+
+    /// Mark style: `crisp` (default) or `sketch`, hand-drawn. SHOT_STYLE sets the default.
+    static var markStyle: String {
+        let s = ProcessInfo.processInfo.environment["SHOT_STYLE"]?.trimmingCharacters(in: .whitespaces) ?? ""
+        return s.isEmpty ? "crisp" : s
+    }
+
+    /// The scale marks are drawn at. Text sets it, so an arrow is as bold as
+    /// the words it points at, but within a band around the image's size, so
+    /// one giant headline or a page of tiny print doesn't throw it off.
+    static func markUnit(_ img: CGImage, textHeight: CGFloat?) -> CGFloat {
+        let base = CGFloat(max(2, sqrt(Double(img.width * img.height)) / 200))
+        guard let th = textHeight else { return base }
+        return min(max(th / 3.4, base * 0.7), base * 2.2)
+    }
 
     /// An ink disc on a halo ring, its numeral in the opposite tone and
     /// centered on cap height, not the line box, so it sits optically level.

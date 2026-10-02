@@ -23,6 +23,12 @@ Picking the window:
 
 `mode: "region"` takes a rectangle in screen **points** (the units `list_windows` bounds use), not image pixels. `mode: "screen"` captures the main display, or another one with `display`.
 
+**Show, don't describe.** When the user asks where something is on their screen ("where's the export setting?", "which button do I click?"), use `point` to draw a spotlight, arrow and label over the live window for a few seconds rather than explaining in words. It uses `target` like compose, never takes focus, and saves nothing. If the result carries a `note` that the window is covered, tell the user to bring it forward and point again.
+
+**Capture at the right moment.** When something is loading, deploying or animating, don't capture and hope: pass `wait_for`. `{"text": "Deployed"}` waits for text to appear, `{"gone": "Loading"}` for it to go, `{"stable": 1}` for a second of no visible change. The result's `wait_met` says whether it happened; on a timeout you still get the last frame, so look before concluding.
+
+**Check your own changes with `diff`.** Capture before you change a UI and again after, same window and size, then `diff` them. You get each changed region with its text before and after, and an image with the changes numbered. If `changed` is 0, your change didn't reach the screen; say so rather than assuming it worked.
+
 After you look at the preview, call `annotate` with a sentence or two on what it shows: the app or page, its state, anything notable. That description is what lets you, or a later agent, find this screenshot with `find_shots`.
 
 ## Pointing at things
@@ -50,6 +56,7 @@ For things without text (icons, images), work out coordinates yourself: `ocr` gi
 - **Hiding by hand:** use `redact`, a solid box, for anything that must not be readable. `pixelate` and `blur` are for de-emphasizing; short text under them can sometimes still be made out.
 - **Walkthroughs:** `counter` annotations auto-number 1, 2, 3 in the order you list them. Pair them with `text` labels or a `spotlight` to focus on one area.
 - `copy: true` also puts the result on the clipboard, ready to paste into Slack or a doc.
+- **Style:** shapes default to `crisp`. `"style": "sketch"` makes them look hand-drawn, which suits casual walkthroughs, social posts and friendly docs. Respect a `SHOT_STYLE` the user has set.
 - **Type:** labels and counters default to shot's pixel face. When the image is for a general audience (docs, a customer email), `"font": "clean"` or `"rounded"` reads more plainly; `serif` suits editorial, `mono` suits code. Respect a `SHOT_FONT` the user has set, and don't pass `font` unless there's a reason.
 - **Color:** leave `color` off and marks pick ink that contrasts with what's underneath. Set it only when the user asks for a color or the image needs one specific accent.
 
