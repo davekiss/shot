@@ -22,25 +22,67 @@ Headless screenshots for Claude on macOS. shot is a native Swift MCP server that
 
 ## Install
 
-### As a Claude Code plugin (recommended)
+### Claude Code
 
 ```
 /plugin marketplace add davekiss/shot
-/plugin install shot@shot
+/plugin install shot@davekiss
 ```
 
 This adds the MCP server, a skill that teaches Claude how to use it well, a `/shot` command that captures your terminal window, and a screenshot history pane. The first time it runs, it downloads the prebuilt binary for its version from this repo's releases.
 
-### Just the MCP server
+### Other agents
 
-Download `shot-macos-universal.tar.gz` from [Releases](https://github.com/davekiss/shot/releases), or build it:
+Install the binary with Homebrew:
 
 ```sh
-swift build -c release
-claude mcp add --scope user shot -- "$PWD/.build/release/shot"
+brew install davekiss/tap/shot
 ```
 
-Any MCP client works; shot speaks MCP over stdio.
+Or download `shot-macos-universal.tar.gz` from [Releases](https://github.com/davekiss/shot/releases) and put `shot` on your PATH, or build it with `swift build -c release`.
+
+Then register it as an MCP server. shot speaks MCP over stdio, so any client works.
+
+**Codex**: `codex mcp add shot -- shot`, or in `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.shot]
+command = "shot"
+```
+
+**OpenCode**: in `~/.config/opencode/opencode.json`:
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "shot": { "type": "local", "command": ["shot"] }
+  }
+}
+```
+
+**Cursor**: in `~/.cursor/mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "shot": { "command": "shot" }
+  }
+}
+```
+
+**Claude Code without the plugin**: `claude mcp add --scope user shot -- shot`
+
+#### The skill
+
+The skill teaches an agent when to use each tool, how to point annotations at text, and to redact before sharing. Codex and OpenCode both read skills from `~/.agents/skills`. Homebrew installs a copy you can link there:
+
+```sh
+mkdir -p ~/.agents/skills
+ln -s "$(brew --prefix)/share/shot/skills/screenshots" ~/.agents/skills/screenshots
+```
+
+Without Homebrew, copy `claude-mod/skills/screenshots` from this repo (or from the release archive) into `~/.agents/skills/`.
 
 ### Permissions
 
@@ -50,7 +92,7 @@ Capturing needs **Screen Recording** permission for the app that launches Claude
 
 Every PNG in `~/Screenshots`, and every file shot writes anywhere, gets a record in `~/Screenshots/.shot-index.json`: when it was taken, the app and window it came from, its OCR text, and a description. Files shot didn't write (from CleanShot or macOS) are indexed but never modified.
 
-Descriptions come from the agent that took the screenshot (`annotate`, or `description` on `compose`). You can also turn on a background describer: while the MCP server runs, it has Claude Haiku describe each screenshot that still has none, a minute after it was taken, using `claude -p` with your own Claude Code login. It's off by default because it sends those screenshots, including ones shot didn't take, to Claude. Set `SHOT_DESCRIBE` in your environment (the plugin passes it through) or with `claude mcp add -e`:
+Descriptions come from the agent that took the screenshot (`annotate`, or `description` on `compose`). You can also turn on a background describer: while the MCP server runs, it has Claude Haiku describe each screenshot that still has none, a minute after it was taken, using `claude -p` with your own Claude Code login. It's off by default because it sends those screenshots, including ones shot didn't take, to Claude. Set `SHOT_DESCRIBE` in your environment (the Claude Code plugin passes it through) or in your client's MCP server config:
 
 | value | describes |
 | --- | --- |
@@ -79,7 +121,7 @@ swift test
 CLAUDE_CODE_PLUGIN_DIRS="$PWD/claude-mod" claude   # load the plugin from this checkout
 ```
 
-Inside a checkout, the plugin's launcher uses your local `.build/release/shot` over the downloaded release. To release, bump the version in `claude-mod/bin/shot`, `claude-mod/.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json`, then push a `v<version>` tag; the release workflow builds a universal binary and publishes it.
+Inside a checkout, the plugin's launcher uses your local `.build/release/shot` over the downloaded release. To release, bump the version in `claude-mod/bin/shot`, `claude-mod/.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json`, then push a `v<version>` tag. The release workflow builds a universal binary, publishes it, and updates the Homebrew formula when the `HOMEBREW_TAP_TOKEN` secret is set.
 
 ## License
 

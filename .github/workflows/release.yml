@@ -16,12 +16,28 @@ jobs:
           v="${GITHUB_REF_NAME#v}"
           grep -q "VERSION=\"$v\"" claude-mod/bin/shot || { echo "claude-mod/bin/shot VERSION isn't $v"; exit 1; }
           grep -q "\"version\": \"$v\"" claude-mod/.claude-plugin/plugin.json || { echo "plugin.json version isn't $v"; exit 1; }
+          grep -q "\"version\": \"$v\"" .claude-plugin/marketplace.json || { echo "marketplace.json version isn't $v"; exit 1; }
       - run: swift test
       - name: Build a universal binary
         run: |
           swift build -c release --arch arm64 --arch x86_64
-          tar -czf shot-macos-universal.tar.gz -C .build/apple/Products/Release shot
+          mkdir -p dist/skills && cp .build/apple/Products/Release/shot dist/ && cp -R claude-mod/skills/screenshots dist/skills/
+          tar -czf shot-macos-universal.tar.gz -C dist shot skills
       - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release create "$GITHUB_REF_NAME" shot-macos-universal.tar.gz --generate-notes
+      # Needs a HOMEBREW_TAP_TOKEN secret: a fine-grained token with Contents
+      # read/write on davekiss/homebrew-tap. Without it the release still ships.
+      - name: Update the Homebrew formula
+        env:
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        if: env.TAP_TOKEN != ''
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          sha=$(shasum -a 256 shot-macos-universal.tar.gz | cut -d' ' -f1)
+          git clone "https://x-access-token:$TAP_TOKEN@github.com/davekiss/homebrew-tap.git" tap
+          sed -i '' -E "s|download/v[^/]+/|download/v$v/|; s|sha256 \"[0-9a-f]+\"|sha256 \"$sha\"|; s|version \"[^\"]+\"|version \"$v\"|" tap/Formula/shot.rb
+          cd tap
+          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" commit -am "shot $v"
+          git push

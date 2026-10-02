@@ -5,7 +5,7 @@ description: Capture, mark up and find screenshots on macOS with the shot MCP se
 
 # shot
 
-shot is an MCP server (its tools are `mcp__shot__*`, or `mcp__plugin_shot_shot__*` when installed as a plugin) that takes and edits screenshots headlessly. It never opens a window or steals focus, so you can capture while the user keeps working. The tool schemas list every argument. This skill covers how to use them well.
+shot is an MCP server, usually registered as `shot`, that takes and edits screenshots headlessly. It never opens a window or steals focus, so you can capture while the user keeps working. The tool schemas list every argument. This skill covers how to use them well.
 
 ## Finding an earlier screenshot
 
@@ -53,6 +53,6 @@ For things without text (icons, images), work out coordinates yourself: `ocr` gi
 
 ## When a capture fails
 
-- If an image has the desktop but not the window contents, or capture errors with a permission message, the app that launched Claude Code (the terminal) needs Screen Recording permission in System Settings → Privacy & Security.
+- If an image has the desktop but not the window contents, or capture errors with a permission message, the app that launched the agent (the terminal, or a desktop app) needs Screen Recording permission in System Settings → Privacy & Security.
 - "No window matches" means nothing open matched `app` or `title`. Call `list_windows` with `all: true` and pick by id.
-- If the shot tools aren't loaded, the same tools run from the binary: `shot capture '{"mode":"window","app":"Chrome"}'`, `shot find_shots '{"query":"invoice"}'`. This plugin's launcher is at `bin/shot` inside the plugin folder.
+- If the shot tools aren't loaded, the same tools run from the binary: `shot capture '{"mode":"window","app":"Chrome"}'`, `shot find_shots '{"query":"invoice"}'`. If `shot` isn't on PATH, the Claude Code plugin's copy is at `bin/shot` inside the plugin folder.

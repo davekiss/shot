@@ -1,15 +1,15 @@
 {
-  "name": "shot",
+  "name": "davekiss",
   "owner": {
     "name": "Dave Kiss"
   },
   "metadata": {
-    "description": "Headless macOS screenshots for Claude"
+    "description": "Plugins by Dave Kiss"
   },
   "plugins": [
     {
       "name": "shot",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "source": "./claude-mod",
       "description": "Capture, mark up, redact and find screenshots without taking focus: the shot MCP server, a skill, /shot and a history pane"
     }
