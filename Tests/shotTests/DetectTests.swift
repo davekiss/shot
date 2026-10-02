@@ -75,6 +75,12 @@ final class SensitiveTests: XCTestCase {
         }
     }
 
+    func testCoversThePasswordInAConnectionURL() throws {
+        let img = render(["DATABASE_URL=postgres://app:hunter2hunter2@db:5432/acme"])
+        let f = try XCTUnwrap(Sensitive.scan(img).first { $0.kind == "secret" })
+        XCTAssertEqual(f.text, "hunter2hunter2")
+    }
+
     func testCoversPhoneNumbersByDefault() {
         let img = render(["Call (555) 867-5309 or +1 555.123.4567 today"])
         XCTAssertEqual(Sensitive.scan(img).filter { $0.kind == "phone" }.count, 2)

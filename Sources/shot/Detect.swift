@@ -201,6 +201,8 @@ enum Sensitive {
         ("secret", #"(?:sk|pk|rk)_(?:live|test)_[0-9A-Za-z]{10,}"#),
         ("secret", #"eyJ[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{4,}"#),
         ("secret", #"-----BEGIN [A-Z ]*PRIVATE KEY-----"#),
+        // The password in scheme://user:password@host (database URLs, mostly).
+        ("secret", #"[A-Za-z][A-Za-z0-9+.\-]*://[^\s:/@]+:([^\s@/]+)@"#),
         ("secret", #"(?i)bearer\s+([A-Za-z0-9._~+/\-]{16,})"#),
         ("secret", #"(?i)(?:api[_\-]?key|secret|token|passw(?:or)?d|pwd)["']?\s*[:=]\s*["']?([^\s"']{6,})"#),
         ("email", #"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}"#),
@@ -228,7 +230,9 @@ enum Sensitive {
                     // match early; the rest of the word is still the secret.
                     if kind == "secret" {
                         var end = NSMaxRange(r)
-                        while end < ns.length, let u = UnicodeScalar(ns.character(at: end)), !CharacterSet.whitespaces.contains(u) { end += 1 }
+                        // @ and quotes end a secret: "user:pass@host", "token": "…"
+                        let stops = CharacterSet.whitespaces.union(CharacterSet(charactersIn: "@\"'`"))
+                        while end < ns.length, let u = UnicodeScalar(ns.character(at: end)), !stops.contains(u) { end += 1 }
                         r.length = end - r.location
                     }
                     if kind == "card", !luhn(ns.substring(with: r)) { continue }

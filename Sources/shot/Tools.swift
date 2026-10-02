@@ -122,7 +122,7 @@ enum Tools {
             let findings = Sensitive.scan(original, kinds: kinds)
             // Drawn first, so the caller's own labels and arrows stay on top.
             anns = findings.map { f in
-                let r = f.rect.insetBy(dx: -max(unit * 0.5, f.rect.height * 0.3), dy: -max(unit * 0.4, f.rect.height * 0.25))
+                let r = f.rect.insetBy(dx: -max(unit * 0.25, f.rect.height * 0.08), dy: -max(unit * 0.4, f.rect.height * 0.25))
                 let type = f.kind == "face" && style == "box" ? "pixelate" : (style == "box" ? "redact" : style)
                 return ["type": type, "x": r.minX, "y": r.minY, "width": r.width, "height": r.height]
             } + anns
