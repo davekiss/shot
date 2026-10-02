@@ -3,15 +3,18 @@
 # the plugin sits in a checkout of the repo, a `shot` already on PATH, or the
 # release matching this plugin's version, downloaded once.
 set -e
-VERSION="0.1.4"
+VERSION="0.1.5"
 REPO="davekiss/shot"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
 if [ -n "$SHOT_BIN" ]; then exec "$SHOT_BIN" "$@"; fi
 if [ -x "$ROOT/../.build/release/shot" ]; then exec "$ROOT/../.build/release/shot" "$@"; fi
-for p in $(command -v -a shot 2>/dev/null); do
-  [ "$p" -ef "$0" ] || exec "$p" "$@"
+# POSIX sh has no `command -v -a`, so walk PATH by hand, skipping this launcher.
+IFS=:
+for d in $PATH; do
+  [ -x "$d/shot" ] && ! [ "$d/shot" -ef "$0" ] && { unset IFS; exec "$d/shot" "$@"; }
 done
+unset IFS
 
 DIR="$HOME/Library/Application Support/shot/$VERSION"
 BIN="$DIR/shot"

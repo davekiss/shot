@@ -9,9 +9,9 @@
   "plugins": [
     {
       "name": "shot",
-      "version": "0.1.4",
+      "version": "0.1.5",
       "source": "./claude-mod",
-      "description": "Capture, mark up, redact and find screenshots without taking focus: the shot MCP server, a skill, /shot and a history pane"
+      "description": "Headless macOS screenshots for agents: capture, mark up, redact, record and find screenshots without taking focus. Bundles the shot MCP server, a skill, /shot and a history pane."
     }
   ]
 }

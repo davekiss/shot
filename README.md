@@ -106,6 +106,16 @@ And it captures at the right moment. `wait_for` re-captures until text appears, 
 {"mode": "window", "app": "Safari", "wait_for": {"stable": 1}}
 ```
 
+### It watches things happen
+
+Agents can't watch video. `record` films a window for a few seconds, without taking focus, and hands back a storyboard instead: only the moments where something visibly changed, each with its timestamp and the text that changed ("Saving…" → "Error: timeout" at 3.1s), plus one image laying those moments out in a grid. "It flickers after I click Save" becomes something an agent can actually debug.
+
+```json
+{"app": "Safari", "seconds": 20, "until": {"text": "Deployed"}, "gif": true}
+```
+
+You also get the MP4, and a GIF when you ask for one.
+
 ### It remembers every screenshot
 
 Every screenshot in `~/Screenshots` is indexed with the app and window it came from, its text, and a description. Your agent searches that instead of opening images one by one:
@@ -201,6 +211,7 @@ Crop around the lines you care about, then circle and underline inside them.
 | --- | --- |
 | `capture` | A screen, a window (by app, title or id; covered and minimized windows work) or a region, optionally waiting for text or a settled screen first |
 | `compose` | Annotations, `target`, `redact_sensitive`, crop, auto-balance, backgrounds |
+| `record` | Film a window or region and get a storyboard of the moments that changed, plus MP4 and GIF |
 | `point` | Draw marks over the live screen for a few seconds, then fade them out |
 | `diff` | What changed between two captures: regions, text before and after, and a marked-up image |
 | `find_sensitive` | Report secrets and personal data in an image, masked, without editing it |
@@ -240,7 +251,9 @@ Any installed font name works too: `"font": "Avenir Next"`.
 /plugin install shot@davekiss
 ```
 
-Adds the MCP server, the skill, a `/shot` command that captures your terminal window, and a screenshot history pane. On first run it downloads the prebuilt binary matching its version from this repo's releases. Prefer the bare server? `claude mcp add --scope user shot -- shot`.
+Adds the MCP server, the skill, a `/shot` command that captures your terminal window, and a screenshot history pane. It uses a `shot` already on your PATH (say, from Homebrew), or downloads the prebuilt binary matching its version from this repo's releases. From a terminal, the same install is `claude plugin marketplace add davekiss/shot` then `claude plugin install shot@davekiss`.
+
+Prefer the bare server? `claude mcp add --scope user shot -- shot`. Use one or the other, not both, or every tool shows up twice.
 
 ### The binary
 

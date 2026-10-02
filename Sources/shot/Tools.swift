@@ -39,6 +39,7 @@ enum Tools {
         case "ocr": return try ocr(a)
         case "diff": return try diff(a)
         case "point": return try Overlay.point(a)
+        case "record": return try Record.run(a)
         // Internal: the helper process that shows a point overlay, then exits.
         case "_overlay": Overlay.show(a)
         case "find_sensitive":
@@ -296,6 +297,27 @@ enum Tools {
                     "preview": ["type": "boolean", "description": "Return a preview image. Default true."],
                     "wait_for": ["type": "object", "description": "Re-capture until a condition holds, then keep that frame: {text: 'Deployed'} waits for text to appear, {gone: 'Loading'} for it to disappear, {stable: 1} for 1s of no visible change (pages that finished loading). timeout: seconds, default 20, max 120. The result says whether it was met; on timeout you get the last frame.",
                                  "properties": ["text": ["type": "string"], "gone": ["type": "string"], "stable": ["type": "number"], "timeout": ["type": "number"]]],
+                ],
+            ],
+        ],
+        [
+            "name": "record",
+            "description": "Record a window, a screen region or the main screen for a few seconds without taking focus, and get back a storyboard: the moments where something visibly changed, each with its timestamp, frame and the text that appeared or changed, plus one image laying those moments out in a grid. Use it to see what happens over time (a flicker after clicking Save, a slow load, an animation, a deploy) instead of guessing from single screenshots. Saves an MP4 (and a GIF with gif: true). Blocks for up to `seconds`.",
+            "inputSchema": [
+                "type": "object",
+                "properties": [
+                    "app": ["type": "string", "description": "Window to record: app name substring. Omit app/title/window_id/region for the main screen."],
+                    "title": ["type": "string", "description": "Window title substring."],
+                    "window_id": ["type": "number", "description": "Exact id from list_windows."],
+                    "region": ["type": "object", "description": "A screen rectangle in points instead of a window. Unlike window recording, this includes anything drawn over it, such as point's marks.", "properties": rect["properties"]!],
+                    "seconds": ["type": "number", "description": "How long to record. Default 10, max 60."],
+                    "until": ["type": "object", "description": "Stop early when a condition holds, like capture's wait_for: {text: 'Deployed'}, {gone: 'Loading'} or {stable: 1}. seconds is the limit.",
+                              "properties": ["text": ["type": "string"], "gone": ["type": "string"], "stable": ["type": "number"]]],
+                    "gif": ["type": "boolean", "description": "Also save an animated GIF (8 fps, up to 960px wide) for sharing."],
+                    "fps": ["type": "number", "description": "Video frame rate. Default 30."],
+                    "hide_cursor": ["type": "boolean"],
+                    "output": ["type": "string", "description": "Base path for the files (.mp4, .gif, ' storyboard.png', ' frames/'). Default ~/Screenshots/Recording <time>."],
+                    "preview": ["type": "boolean", "description": "Return the storyboard image. Default true."],
                 ],
             ],
         ],

@@ -27,6 +27,8 @@ Picking the window:
 
 **Capture at the right moment.** When something is loading, deploying or animating, don't capture and hope: pass `wait_for`. `{"text": "Deployed"}` waits for text to appear, `{"gone": "Loading"}` for it to go, `{"stable": 1}` for a second of no visible change. The result's `wait_met` says whether it happened; on a timeout you still get the last frame, so look before concluding.
 
+**Watch things that happen over time with `record`.** For flickers, slow loads, animations, toasts that vanish, or anything a single screenshot misses, record the window for a few seconds (`until` stops early on a condition, like capture's `wait_for`). Read the returned `moments`, each with a time and the text that changed, and look at the storyboard image; open individual frames only if you need detail. Recording blocks for up to `seconds`, so keep it short, and ask the user to trigger the action if it needs their input.
+
 **Check your own changes with `diff`.** Capture before you change a UI and again after, same window and size, then `diff` them. You get each changed region with its text before and after, and an image with the changes numbered. If `changed` is 0, your change didn't reach the screen; say so rather than assuming it worked.
 
 After you look at the preview, call `annotate` with a sentence or two on what it shows: the app or page, its state, anything notable. That description is what lets you, or a later agent, find this screenshot with `find_shots`.

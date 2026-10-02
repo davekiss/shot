@@ -380,3 +380,34 @@ final class ScaleTests: XCTestCase {
         XCTAssertEqual(Annotator.markUnit(render(["x"], width: 2880, height: 1800), textHeight: 40), 40 / 3.4, accuracy: 0.01)
     }
 }
+
+final class StoryboardTests: XCTestCase {
+    func testKeepsOnlyTheMomentsThatChanged() {
+        let deploying = render(["Status: Deploying"], size: 40, width: 900, mono: false)
+        let deployed = render(["Status: Deployed"], size: 40, width: 900, mono: false)
+        var board = Storyboard()
+        for (i, frame) in [deploying, deploying, deploying, deployed, deployed].enumerated() { board.consider(frame, at: Double(i) * 0.25) }
+        board.finish()
+        XCTAssertEqual(board.moments.map(\.t), [0, 0.75])
+        let change = board.moments[1].changes.first
+        XCTAssertTrue(change?.before.contains("Deploying") == true && change?.after.contains("Deployed") == true,
+                      "expected whole-line text, got \(String(describing: change))")
+    }
+
+    func testPickingKeepsFirstAndLast() {
+        var board = Storyboard()
+        for i in 0..<30 { board.consider(render(["Frame \(i)"], size: 40, width: 600, mono: false), at: Double(i)) }
+        let picked = board.picked(12)
+        XCTAssertEqual(picked.count, 12)
+        XCTAssertEqual(picked.first?.t, 0)
+        XCTAssertEqual(picked.last?.t, board.moments.last?.t)
+    }
+
+    func testSheetLaysMomentsOutInAGrid() throws {
+        var board = Storyboard()
+        for i in 0..<5 { board.consider(render(["Step \(i)"], size: 40, width: 800, mono: false, height: 450), at: Double(i)) }
+        let sheet = try Storyboard.sheet(board.moments, unit: 4)
+        XCTAssertEqual(sheet.width, 3 * 900 + 4 * 36)   // five moments: three columns
+        XCTAssertGreaterThan(sheet.height, sheet.width / 3)
+    }
+}

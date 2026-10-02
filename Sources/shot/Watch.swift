@@ -73,14 +73,15 @@ enum Diff {
         return rects.filter { $0.width * $0.height >= floor }.sorted { ($0.minY, $0.minX) < ($1.minY, $1.minX) }
     }
 
-    /// Text inside `r` of each image, so the agent sees the change in words.
+    /// The whole lines of text each change touches, before and after, so the
+    /// agent reads "Deploying…" → "Deployed ✓" rather than the changed letters.
     static func describe(_ rects: [CGRect], _ a: CGImage, _ b: CGImage) -> [Region] {
-        func text(_ img: CGImage, _ r: CGRect) -> String {
-            guard let crop = img.cropping(to: r.insetBy(dx: -6, dy: -6).intersection(CGRect(x: 0, y: 0, width: img.width, height: img.height)).integral)
-            else { return "" }
-            return OCRText(crop).lines.joined(separator: "\n")
+        let ocrA = OCRText(a), ocrB = OCRText(b)
+        func text(_ ocr: OCRText, _ r: CGRect) -> String {
+            let near = r.insetBy(dx: -4, dy: -4)
+            return ocr.observations.filter { ocr.rect($0).intersects(near) }.compactMap(ocr.text).joined(separator: "\n")
         }
-        return rects.map { Region(rect: $0, before: text(a, $0), after: text(b, $0)) }
+        return rects.map { Region(rect: $0, before: text(ocrA, $0), after: text(ocrB, $0)) }
     }
 }
 
