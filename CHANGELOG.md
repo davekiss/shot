@@ -6,6 +6,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com), and versions 
 
 ## [Unreleased]
 
+## [0.1.8] - 2026-10-03
+
 ### Changed
 - **Claude Code plugin:** new captures and edits appear on a one-row strip above the prompt instead of a toast. It lists the last 3 shots, newest first; clicking one opens it in Preview, `copy` copies the newest path, and `hide` dismisses the strip until the next shot. While the strip is hidden, the prompt's hint line shows a dim `▣ N new shots · /shot history` for 30 minutes.
 
@@ -85,7 +87,8 @@ The first release whose binary is signed with a Developer ID and notarized by Ap
 
 First public release: a macOS MCP server with `capture`, `compose` (with `target`), `ocr`, `find_sensitive`, `find_shots`, `list_windows` and `annotate`, plus a Claude Code plugin with a skill, `/shot` and a history pane.
 
-[Unreleased]: https://github.com/davekiss/shot/compare/v0.1.7...HEAD
+[Unreleased]: https://github.com/davekiss/shot/compare/v0.1.8...HEAD
+[0.1.8]: https://github.com/davekiss/shot/compare/v0.1.7...v0.1.8
 [0.1.7]: https://github.com/davekiss/shot/compare/v0.1.6...v0.1.7
 [0.1.6]: https://github.com/davekiss/shot/compare/v0.1.5...v0.1.6
 [0.1.5]: https://github.com/davekiss/shot/compare/v0.1.4...v0.1.5
