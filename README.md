@@ -122,6 +122,10 @@ Agents can't watch video. `record` films a window for a few seconds, without tak
 
 You also get the MP4, and a GIF when you ask for one.
 
+### It cleans up after itself
+
+Most of an agent's screenshots are glances: did the page load, what does that field say. Pass `ephemeral: true` and the capture skips `~/Screenshots` and the library, then deletes itself after 10 minutes, long enough for a follow-up `ocr` or `diff`. Your Screenshots folder keeps only what's worth keeping.
+
 ### It remembers every screenshot
 
 Every screenshot in `~/Screenshots` is indexed with the app and window it came from, its text, and a description. Your agent searches that instead of opening images one by one:

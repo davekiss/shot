@@ -31,7 +31,9 @@ Picking the window:
 
 **Check your own changes with `diff`.** Capture before you change a UI and again after, same window and size, then `diff` them. You get each changed region with its text before and after, and an image with the changes numbered. If `changed` is 0, your change didn't reach the screen; say so rather than assuming it worked.
 
-After you look at the preview, call `annotate` with a sentence or two on what it shows: the app or page, its state, anything notable. That description is what lets you, or a later agent, find this screenshot with `find_shots`.
+**Don't litter the user's Screenshots folder.** When you only need a quick look (checking a page loaded, reading a value, verifying a fix), pass `ephemeral: true` to `capture` or `record`. The file skips ~/Screenshots and the library and is deleted after 10 minutes, so a follow-up `ocr`, `compose` or `diff` still works. Keep captures (the default) when the user will want the image: something to share, a bug report, a before/after they asked for. To keep something derived from an ephemeral capture, give `compose` an `output` path.
+
+After you look at a kept capture's preview, call `annotate` with a sentence or two on what it shows: the app or page, its state, anything notable. That description is what lets you, or a later agent, find this screenshot with `find_shots`.
 
 ## Pointing at things
 

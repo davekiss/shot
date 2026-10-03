@@ -83,7 +83,8 @@ enum Library {
 
     /// Indexes one file now (capture and compose call this for what they write).
     static func add(_ r: Args) {
-        _ = try? withIndex { $0[r["path"] as! String] = r }
+        guard let path = r["path"] as? String, !Scratch.contains(path) else { return }   // ephemeral files stay out
+        _ = try? withIndex { $0[path] = r }
     }
 
     static func lookup(_ path: String) -> Args? {

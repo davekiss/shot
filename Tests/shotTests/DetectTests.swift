@@ -411,3 +411,49 @@ final class StoryboardTests: XCTestCase {
         XCTAssertGreaterThan(sheet.height, sheet.width / 3)
     }
 }
+
+final class EphemeralTests: XCTestCase {
+    var lib: URL!
+
+    override func setUpWithError() throws {
+        lib = FileManager.default.temporaryDirectory.appendingPathComponent("shot-lib-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: lib, withIntermediateDirectories: true)
+        setenv("SHOT_LIBRARY", lib.path, 1)
+    }
+
+    override func tearDown() { unsetenv("SHOT_LIBRARY") }
+
+    func testSweepRemovesOnlyExpiredFiles() throws {
+        let old = Scratch.path("old"), fresh = Scratch.path("fresh")
+        try writePNG(render(["x"], width: 200), to: old)
+        try writePNG(render(["x"], width: 200), to: fresh)
+        try FileManager.default.setAttributes([.modificationDate: Date().addingTimeInterval(-Scratch.ttl - 60)], ofItemAtPath: old)
+        Scratch.sweep()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: old))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fresh))
+        try? FileManager.default.removeItem(atPath: fresh)
+    }
+
+    func testWorkOnAnEphemeralCaptureStaysEphemeral() throws {
+        let input = Scratch.path("Shot")
+        try writePNG(render(["Status: Draft"], size: 36, width: 800), to: input)
+        let result = try Tools.call("compose", ["input": input, "preview": false,
+                                                "annotations": [["type": "rect", "target": "Draft"]]])
+        let out = try XCTUnwrap(result.info["path"] as? String)
+        XCTAssertTrue(Scratch.contains(out), "output landed outside the ephemeral folder: \(out)")
+        XCTAssertEqual(result.info["ephemeral"] as? Bool, true)
+        XCTAssertEqual(result.info["deleted_after_seconds"] as? Int, Int(Scratch.ttl))
+        let index = (try? String(contentsOf: lib.appendingPathComponent(".shot-index.json"), encoding: .utf8)) ?? ""
+        XCTAssertFalse(index.contains("shot-ephemeral"), "an ephemeral file was indexed")
+        try? FileManager.default.removeItem(atPath: input); try? FileManager.default.removeItem(atPath: out)
+    }
+
+    func testAKeptOutputIsNotMarkedEphemeral() throws {
+        let input = Scratch.path("Shot"), kept = lib.appendingPathComponent("kept.png").path
+        try writePNG(render(["Status: Draft"], size: 36, width: 800), to: input)
+        let result = try Tools.call("compose", ["input": input, "output": kept, "preview": false])
+        XCTAssertNil(result.info["ephemeral"])
+        XCTAssertTrue(FileManager.default.fileExists(atPath: kept))
+        try? FileManager.default.removeItem(atPath: input)
+    }
+}

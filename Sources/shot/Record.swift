@@ -188,7 +188,7 @@ enum Record {
         let seconds = min(max(num(a, "seconds") ?? 10, 1), 60)
         let until = try Wait.condition(a["until"])
         let fps = Int(min(max(num(a, "fps") ?? 30, 5), 60))
-        let stamp = timestampedPath("Recording").replacingOccurrences(of: ".png", with: "")
+        let stamp = (flag(a, "ephemeral") ? Scratch.path("Recording") : timestampedPath("Recording")).replacingOccurrences(of: ".png", with: "")
         let base = (a["output"] as? String).map { expand($0).replacingOccurrences(of: ".mp4", with: "") } ?? stamp
         try FileManager.default.createDirectory(atPath: (base as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
         let videoURL = URL(fileURLWithPath: base + ".mp4")

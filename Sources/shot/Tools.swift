@@ -33,6 +33,17 @@ enum Tools {
         """
 
     static func call(_ name: String, _ a: Args) throws -> ToolResult {
+        Scratch.sweep()
+        var result = try dispatch(name, a)
+        // Anything written into the ephemeral folder says so, and when it goes.
+        if let p = result.info["path"] as? String ?? result.info["storyboard"] as? String, Scratch.contains(p) {
+            result.info["ephemeral"] = true
+            result.info["deleted_after_seconds"] = Int(Scratch.ttl)
+        }
+        return result
+    }
+
+    static func dispatch(_ name: String, _ a: Args) throws -> ToolResult {
         switch name {
         case "capture": return try capture(a)
         case "compose": return try compose(a)
@@ -60,7 +71,7 @@ enum Tools {
     static func capture(_ a: Args) throws -> ToolResult {
         try requireScreenRecording()
         let mode = a["mode"] as? String ?? "screen"
-        let out = (a["output"] as? String).map(expand) ?? timestampedPath("Shot")
+        let out = (a["output"] as? String).map(expand) ?? (flag(a, "ephemeral") ? Scratch.path("Shot") : timestampedPath("Shot"))
         try FileManager.default.createDirectory(atPath: (out as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
         var args = ["-x", "-t", "png"]
         var info: Args = [:]
@@ -119,7 +130,7 @@ enum Tools {
         let img = try loadImage(out)
         // Scratch captures (point's look at the screen) stay out of the library.
         if !flag(a, "_scratch") {
-            if let window { Library.writePNGMetadata(out, app: window.app, window: window.label, description: nil) }
+            if let window, !Scratch.contains(out) { Library.writePNGMetadata(out, app: window.app, window: window.label, description: nil) }
             Library.add(try Library.record(path: out, img: img, window: window))
         }
         info["path"] = out
@@ -296,6 +307,7 @@ enum Tools {
                     "cursor": ["type": "boolean"],
                     "output": ["type": "string", "description": "Output PNG path."],
                     "preview": ["type": "boolean", "description": "Return a preview image. Default true."],
+                    "ephemeral": ["type": "boolean", "description": "For a quick look you won't need later: the file goes to a temp folder instead of ~/Screenshots, stays out of the library, and is deleted after 10 minutes. Follow-up ocr/compose/diff on it still work in that window, and their outputs are ephemeral too unless given an output path."],
                     "wait_for": ["type": "object", "description": "Re-capture until a condition holds, then keep that frame: {text: 'Deployed'} waits for text to appear, {gone: 'Loading'} for it to disappear, {stable: 1} for 1s of no visible change (pages that finished loading). timeout: seconds, default 20, max 120. The result says whether it was met; on timeout you get the last frame.",
                                  "properties": ["text": ["type": "string"], "gone": ["type": "string"], "stable": ["type": "number"], "timeout": ["type": "number"]]],
                 ],
@@ -315,6 +327,7 @@ enum Tools {
                     "until": ["type": "object", "description": "Stop early when a condition holds, like capture's wait_for: {text: 'Deployed'}, {gone: 'Loading'} or {stable: 1}. seconds is the limit.",
                               "properties": ["text": ["type": "string"], "gone": ["type": "string"], "stable": ["type": "number"]]],
                     "gif": ["type": "boolean", "description": "Also save an animated GIF (8 fps, up to 960px wide) for sharing."],
+                    "ephemeral": ["type": "boolean", "description": "Keep nothing: the video, frames and storyboard go to a temp folder and are deleted after 10 minutes. Use when you only need to read the storyboard."],
                     "fps": ["type": "number", "description": "Video frame rate. Default 30."],
                     "hide_cursor": ["type": "boolean"],
                     "output": ["type": "string", "description": "Base path for the files (.mp4, .gif, ' storyboard.png', ' frames/'). Default ~/Screenshots/Recording <time>."],

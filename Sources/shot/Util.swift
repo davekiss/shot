@@ -193,3 +193,33 @@ func requireScreenRecording() throws {
         (compose, ocr, diff and find_sensitive work without it.)
         """)
 }
+
+/// Where ephemeral captures live: a temp folder outside ~/Screenshots that
+/// the library never indexes. Files there are swept after `ttl`, long enough
+/// for a follow-up ocr, compose or diff, short enough that nothing piles up.
+enum Scratch {
+    static let ttl: TimeInterval = 600
+
+    static var dir: String {
+        let d = (NSTemporaryDirectory() as NSString).appendingPathComponent("shot-ephemeral")
+        try? FileManager.default.createDirectory(atPath: d, withIntermediateDirectories: true)
+        return (d as NSString).resolvingSymlinksInPath
+    }
+
+    static func path(_ prefix: String, _ ext: String = "png") -> String {
+        uniquePath("\(dir)/\(prefix) \(UUID().uuidString.prefix(8)).\(ext)")
+    }
+
+    static func contains(_ path: String) -> Bool {
+        (expand(path) as NSString).resolvingSymlinksInPath.hasPrefix(dir + "/")
+    }
+
+    /// Deletes anything in the folder older than `ttl`.
+    static func sweep() {
+        let fm = FileManager.default, cutoff = Date().addingTimeInterval(-ttl)
+        for name in (try? fm.contentsOfDirectory(atPath: dir)) ?? [] {
+            let p = "\(dir)/\(name)"
+            if let m = (try? fm.attributesOfItem(atPath: p))?[.modificationDate] as? Date, m < cutoff { try? fm.removeItem(atPath: p) }
+        }
+    }
+}
