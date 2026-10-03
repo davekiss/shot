@@ -351,7 +351,11 @@ swift test
 CLAUDE_CODE_PLUGIN_DIRS="$PWD/claude-mod" claude   # load the plugin from this checkout
 ```
 
-Inside a checkout, the plugin uses your local `.build/release/shot` instead of downloading a release. To release, bump the version in `claude-mod/bin/shot`, `claude-mod/.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json`, then push a `v<version>` tag. The release workflow tests, builds a universal binary, publishes it, and updates the Homebrew formula when the `HOMEBREW_TAP_TOKEN` secret is set.
+Inside a checkout, the plugin uses your local `.build/release/shot` instead of downloading a release. To release, move the `Unreleased` notes in `CHANGELOG.md` under the new version, bump the version in `claude-mod/bin/shot`, `claude-mod/.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json`, then push a `v<version>` tag. The release notes come from that changelog section. The release workflow tests, builds a universal binary, publishes it, and updates the Homebrew formula when the `HOMEBREW_TAP_TOKEN` secret is set.
+
+## Changelog
+
+Every release, with the exact tools and options that changed and any changed defaults called out, is in [CHANGELOG.md](CHANGELOG.md).
 
 ## License
 

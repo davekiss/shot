@@ -1,19 +1,24 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, ToolCallResult } from 'claude-code'
 
-import type { Shot } from '../types'
+import type { Recent, Shot } from '../types'
 
 const PANE = 'shot-history'
-export const SERVERS = ['mcp__shot__', 'mcp__plugin_shot_shot__'] as const
-const NOTICE = 'shot-notice'
-const NOTICE_MS = 4000
+// The server is mcp__shot__ when added with `claude mcp add`, and
+// mcp__plugin_shot_shot__ when it comes bundled with this plugin.
+export const TOOLS = {
+  capture: ['mcp__shot__capture', 'mcp__plugin_shot_shot__capture'],
+  compose: ['mcp__shot__compose', 'mcp__plugin_shot_shot__compose'],
+} as const
+const STRIP_SIZE = 3
+const HINT_MINUTES = 30
 const MODES = ['off', 'composed', 'all'] as const
 type AutoOpen = (typeof MODES)[number]
 
 const shots = atom({ plugin: 'shot', key: 'shots' } as const, [])
 const selected = atom({ plugin: 'shot', key: 'selected' } as const, null)
-const notice = atom({ plugin: 'shot', key: 'notice' } as const, null)
-let noticeTimer: { cancel: () => void } | undefined
+const recent = atom({ plugin: 'shot', key: 'recent' } as const, [])
+const isStripHidden = atom({ plugin: 'shot', key: 'isStripHidden' } as const, false)
 
 const TERMINAL_APPS: Record<string, string> = {
   'iTerm.app': 'iTerm',
@@ -134,23 +139,25 @@ async function openPane($: EngineInterface) {
   return $.ui.open({ id: PANE, title: 'Screenshots', focus: true })
 }
 
-// A toast takes no press (a click only dismisses it), so a capture announces
-// itself in a one-row pane whose whole line opens the shot in Preview. It
-// closes itself as a toast would, and is a plain toast where no pane is drawn.
-async function announce($: EngineInterface, path: string, text: string) {
-  await update($, notice, () => ({ path, text }))
-  noticeTimer?.cancel()
-  const placed = await $.ui.open({ id: NOTICE, title: 'shot', rows: 1 })
-  if (!placed.isPlaced) {
-    await $.ui.close({ id: NOTICE })
-    $.ui.toast(text)
-    return
-  }
-  noticeTimer = $.clock.after(NOTICE_MS, () => void $.ui.close({ id: NOTICE }))
+// A toast can't be pressed, so new shots go on a one-row strip above the
+// prompt instead: the last few, each a click away from Preview. It stays
+// until dismissed, and a new shot brings it back.
+async function announce($: EngineInterface, path: string, verb: Recent['verb']) {
+  const at = await $.clock.now()
+  await update($, recent, prev => [{ path, verb, at }, ...prev.filter(r => r.path !== path)].slice(0, STRIP_SIZE))
+  await update($, isStripHidden, () => false)
+}
+
+// With the strip dismissed, the prompt's hint line carries a dim reminder for
+// a while, so the shots are never far away.
+export const hintTail = (list: Recent[], now: number): string | undefined => {
+  const fresh = list.filter(r => now - r.at < HINT_MINUTES * 60_000)
+  if (fresh.length === 0) return undefined
+  return `▣ ${fresh.length === 1 ? '1 new shot' : `${fresh.length} new shots`} · /shot history`
 }
 
 // Every capture or compose call, from any session's model, lands in the
-// history; the toast is transient and auto-open follows the setting.
+// history and on the strip; auto-open follows the setting.
 async function afterShotTool<R extends ToolCallResult>(
   $: EngineInterface,
   ran: R,
@@ -162,9 +169,8 @@ async function afterShotTool<R extends ToolCallResult>(
 
   await refresh($, path)
   await update($, selected, () => path)
-  const opened = shouldOpen(mode, tool)
-  if (opened) await open($, path)
-  await announce($, path, `shot: ${tool === 'compose' ? 'edited' : 'captured'} ${path.split('/').pop()}${opened ? ' (opened)' : ''}`)
+  if (shouldOpen(mode, tool)) await open($, path)
+  await announce($, path, tool === 'compose' ? 'edited' : 'captured')
 
   return ran
 }
@@ -207,18 +213,13 @@ export const register: Register = (on, options) => {
     await refresh($, path)
     await update($, selected, () => path)
     if (shouldOpen(mode, 'capture')) await open($, path)
-    await announce($, path, `shot: captured ${path.split('/').pop()}`)
+    await announce($, path, 'captured')
 
     return { text: `Saved ${path}` }
   })
 
-  // The server is mcp__shot__ when added with `claude mcp add`, and
-  // mcp__plugin_shot_shot__ when it comes bundled with this plugin.
-  for (const server of SERVERS) {
-    for (const tool of ['capture', 'compose'] as const) {
-      on('tool.call', { tool: `${server}${tool}` }, async ($, e, next) => afterShotTool($, await next(e), tool, mode))
-    }
-  }
+  on('tool.call', { tool: TOOLS.capture }, async ($, e, next) => afterShotTool($, await next(e), 'capture', mode))
+  on('tool.call', { tool: TOOLS.compose }, async ($, e, next) => afterShotTool($, await next(e), 'compose', mode))
 
   // Arrows and Tab walk the rows: the ring landing on a row selects it, and a
   // click or Enter on a row opens it.
@@ -227,25 +228,50 @@ export const register: Register = (on, options) => {
     return next(e)
   })
 
-  on('ui.render', { component: 'Pane', requestId: NOTICE }, async ($, e) => {
-    const { Box, Button } = $.ui.resolve(e)
-    const shown = await read($, notice)
-    if (shown === null) return <Box />
+  // One quiet row above the prompt: the newest shot first and brightest,
+  // older ones dimmed, each opening in Preview; copy takes the newest's path.
+  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    const list = await read($, recent)
+    if (e.props.hasSurvey || list.length === 0 || (await read($, isStripHidden))) return next(e)
+    const { Box, Text, Button } = $.ui.resolve(e)
+    const known = new Map((await read($, shots)).map(s => [s.path, s.what]))
+    const newest = list[0] as Recent
+    // "▣ shot" 7, copy 6, hide 6, gaps: what's left is shared by the chips.
+    const room = Math.max(12, Math.floor((e.props.bodyColumns - 23) / list.length) - 7)
     return (
-      <Box>
+      <Box gap={2}>
+        <Text dimColor>▣ shot</Text>
+        {list.map((r, i) => (
+          <Button
+            key={`recent:${r.path}`}
+            plain
+            dimColor={i > 0}
+            label={`${clockTime(r.at)} ${fit(known.get(r.path) ?? whatOf(r.path).what, room).trimEnd()}`}
+            onPress={async () => {
+              await update($, selected, () => r.path)
+              await open($, r.path)
+            }}
+          />
+        ))}
         <Button
-          key="notice"
+          key="recent-copy"
           plain
-          label={`${shown.text}  · click to view`}
+          dimColor
+          label="copy"
           onPress={async () => {
-            noticeTimer?.cancel()
-            await update($, selected, () => shown.path)
-            await $.ui.close({ id: NOTICE })
-            await open($, shown.path)
+            await $.ui.copy({ text: newest.path, surface: e.surface })
+            $.ui.toast('shot: path copied')
           }}
         />
+        <Button key="recent-hide" plain dimColor label="hide" onPress={() => update($, isStripHidden, () => true)} />
       </Box>
     )
+  })
+
+  on('ui.render', { component: 'PromptHint' }, async ($, e, next) => {
+    if (!(await read($, isStripHidden))) return next(e)
+    const tail = hintTail(await read($, recent), await $.clock.now())
+    return next(tail === undefined ? e : { ...e, props: { ...e.props, tail } })
   })
 
   // Swiss: one grid, flush left, weight and space for hierarchy, a single red

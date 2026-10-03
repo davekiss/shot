@@ -1,7 +1,8 @@
 import { expect, mock, test } from 'claude-code/testing'
 import type { On } from 'claude-code'
+import type { Engine } from 'claude-code/testing'
 
-import { SERVERS, whatOf } from '../hooks/register'
+import { TOOLS, hintTail, whatOf } from '../hooks/register'
 
 const HOME = '/Users/me'
 const DIR = `${HOME}/Screenshots`
@@ -9,7 +10,7 @@ const DIR = `${HOME}/Screenshots`
 // The world beneath the plugin: a ~/Screenshots folder, a shot MCP server
 // that answers with a path, and a process runner that records argv.
 // `placed` says whether the surface draws a pane; `panes` records each open and close.
-function world(on: On, env: Record<string, string> = {}, { placed = false } = {}) {
+function world(on: On, env: Record<string, string> = {}, { placed = false, captures = ['raw'] } = {}) {
   const ran: string[][] = []
   const toasts: string[] = []
   const panes: string[] = []
@@ -44,85 +45,90 @@ function world(on: On, env: Record<string, string> = {}, { placed = false } = {}
     panes.push(`close ${e.id}`)
     return { value: undefined }
   })
-  for (const tool of SERVERS.flatMap(s => [`${s}capture`, `${s}compose`])) {
-    on('tool.call', { tool }, () => ({
-      result: [{ type: 'text', text: '{}' }],
-      text: `{"path" : "/tmp/${tool.endsWith('compose') ? 'edited' : 'raw'}.png", "width": 10}`,
-    }) as never)
-  }
+  // Each capture answers with the next name in `captures`, the last repeating.
+  let shot = 0
+  const answer = (name: string) => ({ result: [{ type: 'text', text: '{}' }], text: `{"path" : "/tmp/${name}.png", "width": 10}` }) as never
+  on('tool.call', { tool: TOOLS.capture }, () => answer(captures[Math.min(shot++, captures.length - 1)] ?? 'raw'))
+  on('tool.call', { tool: TOOLS.compose }, () => answer('edited'))
+  // The engine's own band and hint, for when the strip steps aside.
+  on('ui.render', { component: 'AbovePrompt' }, ($, e) => {
+    const { Box } = $.ui.resolve(e)
+    return <Box key="engine" />
+  })
   return { ran, toasts, panes }
 }
 
+// The strip above the prompt, drawn the way the engine would raise it.
+const strip = ($: Engine, surface: 'terminal' | 'desktop' = 'terminal') =>
+  $.ui.mount({
+    plugin: 'shot',
+    surface,
+    component: 'AbovePrompt',
+    props: { hasSurvey: false, isWorking: false, maxRows: 10, bodyColumns: 140, scroll: { offset: 0, bodyRows: 10 }, view: {} } as never,
+  })
+
+const chips = async (ui: Awaited<ReturnType<typeof strip>>) =>
+  (await ui.findAll({ type: 'Button' })).map(b => b.key).filter(k => k?.startsWith('recent:'))
+
 test('composed mode opens edited images but leaves raw captures for the agent', { options: { auto_open: 'composed' } }, async ($, on) => {
-  const { ran, toasts } = world(on)
+  const { ran } = world(on)
 
   await $.tool.call({ tool: 'mcp__shot__capture', mode: 'window' } as never)
   await $.tool.call({ tool: 'mcp__shot__compose', input: '/tmp/raw.png' } as never)
 
   expect(ran).toEqual([['open', '/tmp/edited.png']])
-  expect(toasts).toEqual(['shot: captured raw.png', 'shot: edited edited.png (opened)'])
 })
 
-test('captures through the plugin-bundled server are announced too', async ($, on) => {
-  const { toasts } = world(on)
-
+test('new shots land on the strip newest first, and a pressed chip opens that shot', async ($, on) => {
+  const { ran } = world(on)
+  mock.clock(on, { now: 60_000 })
   await $.tool.call({ tool: 'mcp__plugin_shot_shot__capture', mode: 'window' } as never)
+  await $.tool.call({ tool: 'mcp__shot__compose', input: '/tmp/raw.png' } as never)
 
-  expect(toasts).toEqual(['shot: captured raw.png'])
+  for (const surface of ['terminal', 'desktop'] as const) {
+    ran.length = 0
+    const ui = await strip($, surface)
+    expect(await chips(ui)).toEqual(['recent:/tmp/edited.png', 'recent:/tmp/raw.png'])
+    await ui.press({ key: 'recent:/tmp/raw.png' })
+    expect(ran).toEqual([['open', '/tmp/raw.png']])
+    await ui.unmount()
+  }
 })
 
-test('where no pane is drawn the capture falls back to a plain toast', async ($, on) => {
-  const { toasts, panes } = world(on)
-
-  await $.tool.call({ tool: 'mcp__shot__capture', mode: 'window' } as never)
-
-  expect(toasts).toEqual(['shot: captured raw.png'])
-  expect(panes).toEqual(['open shot-notice', 'close shot-notice'])
+test('the strip keeps the last three shots', async ($, on) => {
+  world(on, {}, { captures: ['a', 'b', 'c', 'd'] })
+  mock.clock(on, { now: 60_000 })
+  for (let i = 0; i < 4; i++) await $.tool.call({ tool: 'mcp__shot__capture', mode: 'window' } as never)
+  const ui = await strip($)
+  expect(await chips(ui)).toEqual(['recent:/tmp/d.png', 'recent:/tmp/c.png', 'recent:/tmp/b.png'])
+  await ui.unmount()
 })
 
-test('a capture notice opens that shot when clicked', async ($, on) => {
-  const { ran, toasts, panes } = world(on, {}, { placed: true })
+test('dismissing the strip leaves it gone until the next shot brings it back', async ($, on) => {
+  world(on)
   mock.clock(on, { now: 60_000 })
   await $.tool.call({ tool: 'mcp__shot__capture', mode: 'window' } as never)
-  expect(toasts).toEqual([])
+  const ui = await strip($)
+  await ui.press({ key: 'recent-hide' })
+  await ui.unmount()
 
-  const mount = (requestId: string) =>
-    $.ui.mount({
-      plugin: 'shot',
-      surface: 'terminal',
-      component: 'Pane',
-      requestId,
-      props: { title: 'shot', isFocused: false, bodyColumns: 60, placement: 'inline', scroll: { offset: 0, bodyRows: 30 } } as never,
-    })
+  const hidden = await strip($)
+  expect(await chips(hidden)).toEqual([])
+  await hidden.unmount()
 
-  // Move the selection off the capture first, so the press has to bring it back.
-  const history = await mount('shot-history')
-  await history.press({ key: `shot:${DIR}/old.png` })
-  await history.unmount()
-
-  panes.length = 0
-  const notice = await mount('shot-notice')
-  expect((await notice.find({ key: 'notice' }))?.text).toBe('shot: captured raw.png  · click to view')
-  ran.length = 0
-  await notice.press({ key: 'notice' })
-  await notice.unmount()
-  expect(panes).toEqual(['close shot-notice'])
-  expect(ran).toEqual([['open', '/tmp/raw.png']])
-
-  const after = await mount('shot-history')
-  expect(await after.find({ type: 'Text', text: 'raw.png' })).toBeDefined()
-  await after.unmount()
+  await $.tool.call({ tool: 'mcp__shot__compose', input: '/tmp/raw.png' } as never)
+  const back = await strip($)
+  expect(await chips(back)).toEqual(['recent:/tmp/edited.png', 'recent:/tmp/raw.png'])
+  await back.unmount()
 })
 
-test('an unclicked notice closes itself after four seconds', async ($, on) => {
-  const { panes } = world(on, {}, { placed: true })
-  const clock = mock.clock(on, { now: 0 })
-  await $.tool.call({ tool: 'mcp__shot__capture', mode: 'window' } as never)
-
-  await clock.advance(3_999)
-  expect(panes).toEqual(['open shot-notice'])
-  await clock.advance(1)
-  expect(panes).toEqual(['open shot-notice', 'close shot-notice'])
+test('the hint reminder counts recent shots and fades after half an hour', () => {
+  const minute = 60_000
+  const list = [{ path: '/tmp/b.png', verb: 'edited' as const, at: 50 * minute }, { path: '/tmp/a.png', verb: 'captured' as const, at: 10 * minute }]
+  expect(hintTail(list, 52 * minute)).toBe('▣ 1 new shot · /shot history')
+  expect(hintTail(list, 30 * minute)).toBe('▣ 2 new shots · /shot history')
+  expect(hintTail(list, 90 * minute)).toBeUndefined()
+  expect(hintTail([], 0)).toBeUndefined()
 })
 
 test('auto-open is off by default', async ($, on) => {
