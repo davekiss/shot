@@ -16,7 +16,6 @@ jobs:
           v="${GITHUB_REF_NAME#v}"
           grep -q "VERSION=\"$v\"" claude-mod/bin/shot || { echo "claude-mod/bin/shot VERSION isn't $v"; exit 1; }
           grep -q "\"version\": \"$v\"" claude-mod/.claude-plugin/plugin.json || { echo "plugin.json version isn't $v"; exit 1; }
-          grep -q "\"version\": \"$v\"" .claude-plugin/marketplace.json || { echo "marketplace.json version isn't $v"; exit 1; }
           [ -n "$(scripts/changelog-section.sh "$v")" ] || { echo "CHANGELOG.md has no section for $v"; exit 1; }
       - run: swift test
       - name: Build a universal binary

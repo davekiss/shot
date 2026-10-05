@@ -40,7 +40,7 @@ You never left your keyboard.
 **Claude Code**: one install gets you the server, a skill that teaches Claude to use it well, and a `/shot` command.
 
 ```
-/plugin marketplace add davekiss/shot
+/plugin marketplace add davekiss/cc-plugins
 /plugin install shot@davekiss
 ```
 
@@ -257,11 +257,11 @@ Any installed font name works too: `"font": "Avenir Next"`.
 ### Claude Code plugin
 
 ```
-/plugin marketplace add davekiss/shot
+/plugin marketplace add davekiss/cc-plugins
 /plugin install shot@davekiss
 ```
 
-Adds the MCP server, the skill, a `/shot` command that captures your terminal window, and a screenshot history pane. It uses a `shot` already on your PATH (say, from Homebrew), or downloads the prebuilt binary matching its version from this repo's releases. From a terminal, the same install is `claude plugin marketplace add davekiss/shot` then `claude plugin install shot@davekiss`.
+Adds the MCP server, the skill, a `/shot` command that captures your terminal window, and a screenshot history pane. It uses a `shot` already on your PATH (say, from Homebrew), or downloads the prebuilt binary matching its version from this repo's releases. From a terminal, the same install is `claude plugin marketplace add davekiss/cc-plugins` then `claude plugin install shot@davekiss`.
 
 Prefer the bare server? `claude mcp add --scope user shot -- shot`. Use one or the other, not both, or every tool shows up twice.
 
@@ -351,7 +351,7 @@ swift test
 CLAUDE_CODE_PLUGIN_DIRS="$PWD/claude-mod" claude   # load the plugin from this checkout
 ```
 
-Inside a checkout, the plugin uses your local `.build/release/shot` instead of downloading a release. To release, move the `Unreleased` notes in `CHANGELOG.md` under the new version, bump the version in `claude-mod/bin/shot`, `claude-mod/.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json`, then push a `v<version>` tag. The release notes come from that changelog section. The release workflow tests, builds a universal binary, publishes it, and updates the Homebrew formula when the `HOMEBREW_TAP_TOKEN` secret is set.
+Inside a checkout, the plugin uses your local `.build/release/shot` instead of downloading a release. To release, move the `Unreleased` notes in `CHANGELOG.md` under the new version, bump the version in `claude-mod/bin/shot` and `claude-mod/.claude-plugin/plugin.json`, then push a `v<version>` tag. The release notes come from that changelog section. The release workflow tests, builds a universal binary, publishes it, and updates the Homebrew formula when the `HOMEBREW_TAP_TOKEN` secret is set.
 
 ## Changelog
 
